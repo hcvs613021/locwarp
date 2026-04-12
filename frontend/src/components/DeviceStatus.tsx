@@ -39,6 +39,7 @@ const DeviceStatus: React.FC<DeviceStatusProps> = ({
   const [tunnelPort, setTunnelPort] = useState('49152');
   const [tunnelConnecting, setTunnelConnecting] = useState(false);
   const [tunnelError, setTunnelError] = useState<string | null>(null);
+  const [showIpHelp, setShowIpHelp] = useState(false);
 
   return (
     <div className={`device-status ${isConnected ? 'device-connected' : 'device-disconnected'}`}>
@@ -217,6 +218,20 @@ const DeviceStatus: React.FC<DeviceStatusProps> = ({
                 <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
               </svg>
               WiFi Tunnel
+              <button
+                onClick={() => setShowIpHelp(!showIpHelp)}
+                title="如何找到 iPhone 的 IP?"
+                style={{
+                  width: 16, height: 16, borderRadius: '50%',
+                  border: '1px solid rgba(255,255,255,0.3)',
+                  background: 'transparent', color: 'inherit',
+                  fontSize: 10, lineHeight: 1, cursor: 'pointer',
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  padding: 0, opacity: 0.6,
+                }}
+              >
+                ?
+              </button>
             </span>
             {tunnelStatus.running && (
               <span style={{
@@ -229,6 +244,26 @@ const DeviceStatus: React.FC<DeviceStatusProps> = ({
               </span>
             )}
           </div>
+
+          {showIpHelp && (
+            <div style={{
+              fontSize: 11, padding: '8px 10px', marginBottom: 8,
+              background: 'rgba(108, 140, 255, 0.08)',
+              border: '1px solid rgba(108, 140, 255, 0.3)',
+              borderRadius: 4, lineHeight: 1.6,
+            }}>
+              <div style={{ fontWeight: 600, marginBottom: 4, color: '#6c8cff' }}>
+                如何找到 iPhone 的 IP?
+              </div>
+              <div style={{ opacity: 0.85 }}>
+                iPhone 上:<br />
+                <b>設定 → Wi-Fi → 點目前連線網路旁的 (i) → 往下找「IP 位址」</b>
+              </div>
+              <div style={{ fontSize: 10, opacity: 0.6, marginTop: 6 }}>
+                iPhone 與電腦必須在同一個 WiFi 網段
+              </div>
+            </div>
+          )}
 
           {tunnelStatus.running ? (
             <div>
