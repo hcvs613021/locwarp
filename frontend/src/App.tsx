@@ -1,0 +1,503 @@
+import React, { useState, useCallback, useEffect } from 'react'
+import { useWebSocket } from './hooks/useWebSocket'
+import { useDevice } from './hooks/useDevice'
+import { useSimulation } from './hooks/useSimulation'
+import { useJoystick } from './hooks/useJoystick'
+import { useBookmarks } from './hooks/useBookmarks'
+import * as api from './services/api'
+
+import MapView from './components/MapView'
+import ControlPanel from './components/ControlPanel'
+import DeviceStatus from './components/DeviceStatus'
+import JoystickPad from './components/JoystickPad'
+import EtaBar from './components/EtaBar'
+import StatusBar from './components/StatusBar'
+
+import { SimMode, MoveMode } from './hooks/useSimulation'
+
+const SPEED_MAP: Record<MoveMode, number> = {
+  walking: 5,
+  running: 10,
+  driving: 40,
+}
+
+const App: React.FC = () => {
+  const ws = useWebSocket()
+  const device = useDevice()
+  const sim = useSimulation(ws.lastMessage)
+  const joystick = useJoystick(ws.sendMessage, sim.mode === SimMode.Joystick)
+  const bm = useBookmarks()
+
+  const [savedRoutes, setSavedRoutes] = useState<any[]>([])
+  const [cooldown, setCooldown] = useState(0)
+  const [cooldownEnabled, setCooldownEnabled] = useState(true)
+  const [randomWalkRadius, setRandomWalkRadius] = useState(500)
+  const [wpGenRadius, setWpGenRadius] = useState(300)
+  const [wpGenCount, setWpGenCount] = useState(5)
+
+  const generateWaypoints = useCallback((radius: number, count: number) => {
+    if (!sim.currentPosition) {
+      alert('尚未取得目前位置,無法產生隨機路徑點')
+      return
+    }
+    const { lat, lng } = sim.currentPosition
+    const latScale = 111320
+    const lngScale = 111320 * Math.cos((lat * Math.PI) / 180)
+
+    type Pt = { lat: number; lng: number; theta?: number }
+    const pts: Pt[] = []
+    for (let i = 0; i < count; i++) {
+      const r = radius * Math.sqrt(Math.random())
+      const theta = Math.random() * 2 * Math.PI
+      pts.push({
+        lat: lat + (r * Math.cos(theta)) / latScale,
+        lng: lng + (r * Math.sin(theta)) / lngScale,
+        theta,
+      })
+    }
+
+    // Nearest-neighbor from current position → shorter total path
+    const remaining = [...pts]
+    const ordered: Pt[] = []
+    let cx = lat, cy = lng
+    while (remaining.length) {
+      let bestIdx = 0, bestD = Infinity
+      for (let i = 0; i < remaining.length; i++) {
+        const dx = (remaining[i].lat - cx) * latScale
+        const dy = (remaining[i].lng - cy) * lngScale
+        const d = dx * dx + dy * dy
+        if (d < bestD) { bestD = d; bestIdx = i }
+      }
+      const [next] = remaining.splice(bestIdx, 1)
+      ordered.push(next)
+      cx = next.lat; cy = next.lng
+    }
+
+    sim.setWaypoints(ordered.map(({ lat, lng }) => ({ lat, lng })))
+  }, [sim])
+
+  const handleGenerateRandomWaypoints = useCallback(() => {
+    generateWaypoints(wpGenRadius, wpGenCount)
+  }, [generateWaypoints, wpGenRadius, wpGenCount])
+
+  const handleGenerateAllRandom = useCallback(() => {
+    const radius = Math.floor(50 + Math.random() * 950)  // 50–1000 m
+    const count = Math.floor(3 + Math.random() * 8)       // 3–10 點
+    setWpGenRadius(radius)
+    setWpGenCount(count)
+    generateWaypoints(radius, count)
+  }, [generateWaypoints])
+
+  const handleToggleCooldown = useCallback((enabled: boolean) => {
+    setCooldownEnabled(enabled)
+    api.setCooldownEnabled(enabled).catch(() => setCooldownEnabled((v) => !v))
+  }, [])
+
+  // Load saved routes on mount
+  useEffect(() => {
+    api.getSavedRoutes().then(setSavedRoutes).catch(() => {})
+  }, [])
+
+  // Auto-scan devices when WebSocket (re)connects (e.g. after backend restart)
+  useEffect(() => {
+    if (ws.connected) {
+      device.scan()
+    }
+  }, [ws.connected])
+
+  // Poll cooldown
+  useEffect(() => {
+    if (!ws.connected) return
+    const id = setInterval(() => {
+      api.getCooldownStatus().then((s: any) => {
+        setCooldown(s.remaining_seconds ?? 0)
+        if (typeof s.enabled === 'boolean') setCooldownEnabled(s.enabled)
+      }).catch(() => {})
+    }, 2000)
+    return () => clearInterval(id)
+  }, [ws.connected])
+
+  // -- Map handlers --
+  const handleMapClick = useCallback((lat: number, lng: number) => {
+    // Just set as destination for now
+  }, [])
+
+  const handleTeleport = useCallback((lat: number, lng: number) => {
+    sim.teleport(lat, lng)
+  }, [sim])
+
+  const handleNavigate = useCallback((lat: number, lng: number) => {
+    sim.navigate(lat, lng, sim.moveMode)
+  }, [sim])
+
+  const [addBmDialog, setAddBmDialog] = useState<{ lat: number; lng: number; name: string; category: string } | null>(null)
+
+  const handleAddBookmark = useCallback((lat: number, lng: number) => {
+    setAddBmDialog({
+      lat,
+      lng,
+      name: '',
+      category: bm.categories[0]?.name || '預設',
+    })
+  }, [bm.categories])
+
+  const submitAddBookmark = useCallback(() => {
+    if (!addBmDialog || !addBmDialog.name.trim()) return
+    const cat = bm.categories.find(c => c.name === addBmDialog.category)
+    bm.createBookmark({
+      id: '',
+      name: addBmDialog.name.trim(),
+      lat: addBmDialog.lat,
+      lng: addBmDialog.lng,
+      category_id: cat?.id || 'default',
+    })
+    setAddBmDialog(null)
+  }, [addBmDialog, bm])
+
+  const handleAddWaypoint = useCallback((lat: number, lng: number) => {
+    sim.setWaypoints((prev: any[]) => [...prev, { lat, lng }])
+  }, [sim])
+
+  const handleClearWaypoints = useCallback(() => {
+    sim.setWaypoints([])
+  }, [sim])
+
+  const handleRemoveWaypoint = useCallback((index: number) => {
+    sim.setWaypoints((prev: any[]) => prev.filter((_: any, i: number) => i !== index))
+  }, [sim])
+
+  const handleStartWaypointRoute = useCallback(() => {
+    if (sim.waypoints.length < 1) return
+    const route = sim.currentPosition
+      ? [{ lat: sim.currentPosition.lat, lng: sim.currentPosition.lng }, ...sim.waypoints]
+      : sim.waypoints
+    if (route.length < 2) return
+    if (sim.mode === SimMode.Loop) {
+      sim.startLoop(route)
+    } else if (sim.mode === SimMode.MultiStop) {
+      sim.multiStop(route, 10, false)
+    }
+  }, [sim])
+
+  // -- ControlPanel handlers --
+  const handleStart = useCallback(() => {
+    if (sim.mode === SimMode.Joystick) {
+      sim.joystickStart(sim.moveMode)
+    } else if (sim.mode === SimMode.RandomWalk && sim.currentPosition) {
+      sim.randomWalk(sim.currentPosition, randomWalkRadius)
+    } else if (sim.mode === SimMode.Loop || sim.mode === SimMode.MultiStop) {
+      handleStartWaypointRoute()
+    }
+  }, [sim, randomWalkRadius, handleStartWaypointRoute])
+
+  const handleStop = useCallback(() => {
+    sim.restore()
+  }, [sim])
+
+  const handleRouteLoad = useCallback((id: string) => {
+    const route = savedRoutes.find((r) => r.id === id)
+    if (!route || !Array.isArray(route.waypoints)) return
+    sim.setWaypoints(route.waypoints.map((w: any) => ({ lat: w.lat, lng: w.lng })))
+  }, [savedRoutes, sim])
+
+  const handleRouteSave = useCallback((name: string) => {
+    if (sim.waypoints.length > 0) {
+      api.saveRoute({ name, waypoints: sim.waypoints, profile: sim.moveMode })
+        .then(() => api.getSavedRoutes().then(setSavedRoutes))
+        .catch(() => {})
+    }
+  }, [sim])
+
+  // Build props for components
+  const currentPos = sim.currentPosition
+    ? { lat: sim.currentPosition.lat, lng: sim.currentPosition.lng }
+    : null
+
+  const destPos = sim.destination
+    ? { lat: sim.destination.lat, lng: sim.destination.lng }
+    : null
+
+  const speed = SPEED_MAP[sim.moveMode] || 5
+
+  // Determine running/paused state from status
+  const isRunning = sim.status.running
+  const isPaused = sim.status.paused
+
+  return (
+    <div className="app-layout">
+      <div className="sidebar">
+        <div className="sidebar-content">
+        <DeviceStatus
+          device={device.connectedDevice ? {
+            id: device.connectedDevice.udid,
+            name: device.connectedDevice.name,
+            iosVersion: device.connectedDevice.ios_version,
+            connectionType: device.connectedDevice.connection_type,
+          } : null}
+          devices={device.devices.map(d => ({
+            id: d.udid,
+            name: d.name,
+            iosVersion: d.ios_version,
+            connectionType: d.connection_type,
+          }))}
+          isConnected={device.connectedDevice !== null}
+          onScan={device.scan}
+          onSelect={(id: string) => device.connect(id)}
+          onStartWifiTunnel={device.startWifiTunnel}
+          onStopTunnel={device.stopTunnel}
+          tunnelStatus={device.tunnelStatus}
+        />
+        <ControlPanel
+          simMode={sim.mode}
+          moveMode={sim.moveMode}
+          speed={speed}
+          isRunning={isRunning}
+          isPaused={isPaused}
+          currentPosition={currentPos}
+          onModeChange={sim.setMode}
+          onSpeedChange={(s: number) => {
+            if (s <= 5) sim.setMoveMode(MoveMode.Walking)
+            else if (s <= 10) sim.setMoveMode(MoveMode.Running)
+            else sim.setMoveMode(MoveMode.Driving)
+          }}
+          onMoveModeChange={sim.setMoveMode}
+          customSpeedKmh={sim.customSpeedKmh}
+          onCustomSpeedChange={sim.setCustomSpeedKmh}
+          speedMinKmh={sim.speedMinKmh}
+          onSpeedMinChange={sim.setSpeedMinKmh}
+          speedMaxKmh={sim.speedMaxKmh}
+          onSpeedMaxChange={sim.setSpeedMaxKmh}
+          onStart={handleStart}
+          onStop={handleStop}
+          onPause={sim.pause}
+          onResume={sim.resume}
+          onRestore={sim.restore}
+          onTeleport={handleTeleport}
+          onNavigate={handleNavigate}
+          bookmarks={bm.bookmarks.map(b => ({
+            id: b.id,
+            name: b.name,
+            lat: b.lat,
+            lng: b.lng,
+            category: bm.categories.find(c => c.id === b.category_id)?.name || '預設',
+          }))}
+          bookmarkCategories={bm.categories.map(c => c.name)}
+          onBookmarkClick={(b: any) => handleTeleport(b.lat, b.lng)}
+          onBookmarkAdd={(b: any) => {
+            const cat = bm.categories.find(c => c.name === b.category)
+            bm.createBookmark({ id: '', name: b.name, lat: b.lat, lng: b.lng, category_id: cat?.id || 'default' })
+          }}
+          onBookmarkDelete={(id: string) => bm.deleteBookmark(id)}
+          onBookmarkEdit={(id: string, data: any) => bm.updateBookmark(id, data)}
+          onCategoryAdd={(name: string) => bm.createCategory({ id: '', name, color: '#6c8cff' })}
+          onCategoryDelete={(name: string) => {
+            const cat = bm.categories.find(c => c.name === name)
+            if (cat) bm.deleteCategory(cat.id)
+          }}
+          savedRoutes={savedRoutes.map(r => ({ id: r.id, name: r.name, waypoints: r.waypoints ?? [] }))}
+          onRouteLoad={handleRouteLoad}
+          onRouteSave={handleRouteSave}
+          randomWalkRadius={randomWalkRadius}
+          onRandomWalkRadiusChange={setRandomWalkRadius}
+          currentWaypointsCount={sim.waypoints.length}
+          modeExtraSection={(sim.mode === SimMode.Loop || sim.mode === SimMode.MultiStop || sim.mode === SimMode.Navigate) ? (
+          <div className="section" style={{ margin: '0 0 8px 0' }}>
+            <div className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="3" />
+                <line x1="12" y1="5" x2="12" y2="1" />
+                <line x1="12" y1="23" x2="12" y2="19" />
+              </svg>
+              路徑點 ({sim.waypoints.length})
+              <span style={{ fontSize: 10, opacity: 0.5, marginLeft: 4 }}>右鍵地圖添加</span>
+            </div>
+            <div className="section-content">
+              <div style={{ marginBottom: 6, fontSize: 11 }}>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4 }}>
+                  <span style={{ opacity: 0.7, width: 36 }}>半徑</span>
+                  <input
+                    type="number"
+                    min={10}
+                    value={wpGenRadius}
+                    onChange={(e) => setWpGenRadius(Math.max(1, parseInt(e.target.value) || 0))}
+                    style={{ flex: 1, padding: '2px 4px', fontSize: 11 }}
+                  />
+                  <span style={{ opacity: 0.5, width: 16 }}>m</span>
+                </div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ opacity: 0.7, width: 36 }}>數量</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={wpGenCount}
+                    onChange={(e) => setWpGenCount(Math.max(1, parseInt(e.target.value) || 0))}
+                    style={{ flex: 1, padding: '2px 4px', fontSize: 11 }}
+                  />
+                  <span style={{ opacity: 0.5, width: 16 }}>點</span>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    className="action-btn"
+                    style={{ flex: 1, padding: '3px 8px', fontSize: 11 }}
+                    onClick={handleGenerateRandomWaypoints}
+                    title="在當前位置周圍隨機產生路徑點"
+                  >隨機產生</button>
+                  <button
+                    className="action-btn"
+                    style={{ flex: 1, padding: '3px 8px', fontSize: 11 }}
+                    onClick={handleGenerateAllRandom}
+                    title="半徑與數量全隨機"
+                  >全隨機</button>
+                </div>
+              </div>
+              {sim.waypoints.length === 0 && (
+                <div style={{ fontSize: 12, opacity: 0.5, padding: '4px 0' }}>
+                  在地圖上右鍵點擊 → 「添加路徑點」,或使用上方隨機產生
+                </div>
+              )}
+              {sim.waypoints.map((wp: any, i: number) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', fontSize: 12 }}>
+                  <span style={{ color: '#ff9800', fontWeight: 600, width: 20 }}>#{i + 1}</span>
+                  <span style={{ flex: 1, opacity: 0.8 }}>{wp.lat.toFixed(5)}, {wp.lng.toFixed(5)}</span>
+                  <button
+                    className="action-btn"
+                    style={{ padding: '2px 6px', fontSize: 10 }}
+                    onClick={() => handleRemoveWaypoint(i)}
+                    title="移除"
+                  >✕</button>
+                </div>
+              ))}
+              {sim.waypoints.length > 0 && (
+                <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                  <button
+                    className="action-btn primary"
+                    style={{ flex: 1 }}
+                    onClick={handleStartWaypointRoute}
+                    disabled={sim.waypoints.length < 1 || !sim.currentPosition}
+                  >
+                    開始{sim.mode === SimMode.Loop ? '巡迴' : sim.mode === SimMode.MultiStop ? '多點導航' : '導航'}
+                  </button>
+                  <button className="action-btn" onClick={handleClearWaypoints}>清除</button>
+                </div>
+              )}
+            </div>
+          </div>
+          ) : null}
+        />
+
+        </div>
+      </div>
+      <div className="map-container">
+        <EtaBar
+          state={sim.status?.state ?? 'idle'}
+          progress={sim.progress}
+          remainingDistance={sim.status?.distance_remaining ?? 0}
+          traveledDistance={sim.status?.distance_traveled ?? 0}
+          eta={sim.eta ?? 0}
+        />
+        <MapView
+          currentPosition={currentPos}
+          destination={destPos}
+          waypoints={sim.waypoints.map((w, i) => ({ ...w, index: i }))}
+          routePath={sim.routePath}
+          randomWalkRadius={
+            sim.mode === SimMode.RandomWalk ? randomWalkRadius :
+            (sim.mode === SimMode.Loop || sim.mode === SimMode.MultiStop) ? wpGenRadius :
+            null
+          }
+          onMapClick={handleMapClick}
+          onTeleport={handleTeleport}
+          onNavigate={handleNavigate}
+          onAddBookmark={handleAddBookmark}
+          onAddWaypoint={handleAddWaypoint}
+          showWaypointOption={sim.mode === SimMode.Loop || sim.mode === SimMode.MultiStop || sim.mode === SimMode.Navigate}
+        />
+        {sim.mode === SimMode.Joystick && (
+          <JoystickPad
+            direction={joystick.direction}
+            intensity={joystick.intensity}
+            onMove={joystick.updateFromPad}
+            onRelease={() => joystick.updateFromPad(0, 0)}
+          />
+        )}
+        {addBmDialog && (
+          <div
+            style={{
+              position: 'absolute', top: 60, left: '50%', transform: 'translateX(-50%)',
+              zIndex: 2500, background: '#23232a', border: '1px solid #3a3a42',
+              borderRadius: 8, padding: 14, width: 300,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+            }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>加入收藏</div>
+            <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 8 }}>
+              {addBmDialog.lat.toFixed(5)}, {addBmDialog.lng.toFixed(5)}
+            </div>
+            <input
+              type="text"
+              className="search-input"
+              placeholder="收藏名稱"
+              autoFocus
+              value={addBmDialog.name}
+              onChange={(e) => setAddBmDialog({ ...addBmDialog, name: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submitAddBookmark()
+                if (e.key === 'Escape') setAddBmDialog(null)
+              }}
+              style={{ width: '100%', marginBottom: 8 }}
+            />
+            <select
+              value={addBmDialog.category}
+              onChange={(e) => setAddBmDialog({ ...addBmDialog, category: e.target.value })}
+              style={{
+                width: '100%', marginBottom: 10, padding: '6px 8px',
+                background: '#1e1e22', color: '#e0e0e0', border: '1px solid #444',
+                borderRadius: 4, fontSize: 12,
+              }}
+            >
+              {bm.categories.map((c) => (
+                <option key={c.id} value={c.name}>{c.name}</option>
+              ))}
+            </select>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                className="action-btn primary"
+                style={{ flex: 1 }}
+                disabled={!addBmDialog.name.trim()}
+                onClick={submitAddBookmark}
+              >加入</button>
+              <button className="action-btn" onClick={() => setAddBmDialog(null)}>取消</button>
+            </div>
+          </div>
+        )}
+        {sim.error && (
+          <div
+            style={{
+              position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
+              zIndex: 2000, background: '#e53935', color: '#fff', padding: '8px 20px',
+              borderRadius: 6, fontSize: 13, boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+              cursor: 'pointer', maxWidth: '80%', textAlign: 'center',
+            }}
+            onClick={sim.clearError}
+          >
+            {sim.error}
+          </div>
+        )}
+        <StatusBar
+          isConnected={device.connectedDevice !== null}
+          deviceName={device.connectedDevice?.name ?? ''}
+          iosVersion={device.connectedDevice?.ios_version ?? ''}
+          currentPosition={currentPos}
+          speed={speed}
+          mode={sim.mode}
+          cooldown={cooldown}
+          cooldownEnabled={cooldownEnabled}
+          onToggleCooldown={handleToggleCooldown}
+        />
+      </div>
+    </div>
+  )
+}
+
+export default App

@@ -1,0 +1,73 @@
+import uuid
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, HTTPException, UploadFile, File
+
+from models.schemas import RoutePlanRequest, SavedRoute, Coordinate
+from services.route_service import RouteService
+from services.gpx_service import GpxService
+
+router = APIRouter(prefix="/api/route", tags=["route"])
+
+route_service = RouteService()
+gpx_service = GpxService()
+
+# In-memory saved routes (could persist to JSON later)
+_saved_routes: dict[str, SavedRoute] = {}
+
+
+@router.post("/plan")
+async def plan_route(req: RoutePlanRequest):
+    profile_map = {"walking": "foot", "running": "foot", "driving": "car", "foot": "foot", "car": "car"}
+    profile = profile_map.get(req.profile, "foot")
+    result = await route_service.get_route(req.start.lat, req.start.lng, req.end.lat, req.end.lng, profile)
+    return result
+
+
+@router.get("/saved", response_model=list[SavedRoute])
+async def list_saved():
+    return list(_saved_routes.values())
+
+
+@router.post("/saved", response_model=SavedRoute)
+async def save_route(route: SavedRoute):
+    route.id = str(uuid.uuid4())
+    route.created_at = datetime.now(timezone.utc).isoformat()
+    _saved_routes[route.id] = route
+    return route
+
+
+@router.delete("/saved/{route_id}")
+async def delete_saved(route_id: str):
+    if route_id not in _saved_routes:
+        raise HTTPException(status_code=404, detail="Route not found")
+    del _saved_routes[route_id]
+    return {"status": "deleted"}
+
+
+@router.post("/gpx/import")
+async def import_gpx(file: UploadFile = File(...)):
+    content = await file.read()
+    text = content.decode("utf-8")
+    coords = gpx_service.parse_gpx(text)
+    route = SavedRoute(
+        id=str(uuid.uuid4()),
+        name=file.filename or "Imported GPX",
+        waypoints=coords,
+        profile="walking",
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    _saved_routes[route.id] = route
+    return {"status": "imported", "id": route.id, "points": len(coords)}
+
+
+@router.get("/gpx/export/{route_id}")
+async def export_gpx(route_id: str):
+    if route_id not in _saved_routes:
+        raise HTTPException(status_code=404, detail="Route not found")
+    route = _saved_routes[route_id]
+    points = [{"lat": c.lat, "lng": c.lng} for c in route.waypoints]
+    gpx_xml = gpx_service.generate_gpx(points, name=route.name)
+    from fastapi.responses import Response
+    return Response(content=gpx_xml, media_type="application/gpx+xml",
+                    headers={"Content-Disposition": f'attachment; filename="{route.name}.gpx"'})

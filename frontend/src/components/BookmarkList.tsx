@@ -1,0 +1,511 @@
+import React, { useState } from 'react';
+
+interface Bookmark {
+  id?: string;
+  name: string;
+  lat: number;
+  lng: number;
+  category: string;
+}
+
+interface Position {
+  lat: number;
+  lng: number;
+}
+
+interface BookmarkListProps {
+  bookmarks: Bookmark[];
+  categories: string[];
+  currentPosition: Position | null;
+  onBookmarkClick: (bm: Bookmark) => void;
+  onBookmarkAdd: (bm: Bookmark) => void;
+  onBookmarkDelete: (id: string) => void;
+  onBookmarkEdit: (id: string, bm: Partial<Bookmark>) => void;
+  onCategoryAdd: (name: string) => void;
+  onCategoryDelete: (name: string) => void;
+}
+
+const CATEGORY_COLORS: Record<string, string> = {
+  Default: '#4285f4',
+  Home: '#4caf50',
+  Work: '#ff9800',
+  Favorites: '#e91e63',
+  Custom: '#9c27b0',
+};
+
+function getCategoryColor(name: string): string {
+  if (CATEGORY_COLORS[name]) return CATEGORY_COLORS[name];
+  // Deterministic color from name
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const hue = Math.abs(hash) % 360;
+  return `hsl(${hue}, 60%, 55%)`;
+}
+
+const BookmarkList: React.FC<BookmarkListProps> = ({
+  bookmarks,
+  categories,
+  currentPosition,
+  onBookmarkClick,
+  onBookmarkAdd,
+  onBookmarkDelete,
+  onBookmarkEdit,
+  onCategoryAdd,
+  onCategoryDelete,
+}) => {
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [showAddDialog, setShowAddDialog] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newCategory, setNewCategory] = useState(categories[0] || '預設');
+  const [showCategoryMgr, setShowCategoryMgr] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [contextMenu, setContextMenu] = useState<{ bm: Bookmark; x: number; y: number } | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+
+  const toggleCategory = (cat: string) => {
+    setCollapsed((prev) => ({ ...prev, [cat]: !prev[cat] }));
+  };
+
+  const handleAddBookmark = () => {
+    if (!newName.trim() || !currentPosition) return;
+    onBookmarkAdd({
+      name: newName.trim(),
+      lat: currentPosition.lat,
+      lng: currentPosition.lng,
+      category: newCategory,
+    });
+    setNewName('');
+    setShowAddDialog(false);
+  };
+
+  const handleContextMenu = (e: React.MouseEvent, bm: Bookmark) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ bm, x: e.clientX, y: e.clientY });
+  };
+
+  const bookmarksByCategory = categories.reduce<Record<string, Bookmark[]>>((acc, cat) => {
+    acc[cat] = bookmarks.filter((bm) => bm.category === cat);
+    return acc;
+  }, {});
+
+  // Include uncategorized
+  const uncategorized = bookmarks.filter((bm) => !categories.includes(bm.category));
+  if (uncategorized.length > 0) {
+    bookmarksByCategory['Uncategorized'] = uncategorized;
+  }
+
+  return (
+    <div>
+      {/* Header with add / manage buttons */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <button
+          className="action-btn"
+          onClick={() => setShowAddDialog(!showAddDialog)}
+          style={{ padding: '3px 8px', fontSize: 12 }}
+          title="在目前位置新增收藏"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+          新增收藏
+        </button>
+        <button
+          className="action-btn"
+          onClick={() => setShowCategoryMgr(!showCategoryMgr)}
+          style={{ padding: '3px 8px', fontSize: 12, marginLeft: 'auto' }}
+          title="管理分類"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Add bookmark dialog */}
+      {showAddDialog && (
+        <div
+          style={{
+            background: '#2a2a2e',
+            border: '1px solid #444',
+            borderRadius: 6,
+            padding: 12,
+            marginBottom: 8,
+          }}
+        >
+          <input
+            type="text"
+            className="search-input"
+            placeholder="收藏名稱"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleAddBookmark()}
+            style={{ width: '100%', marginBottom: 8 }}
+            autoFocus
+          />
+          <select
+            value={newCategory}
+            onChange={(e) => setNewCategory(e.target.value)}
+            style={{
+              width: '100%',
+              marginBottom: 8,
+              padding: '6px 8px',
+              background: '#1e1e22',
+              color: '#e0e0e0',
+              border: '1px solid #444',
+              borderRadius: 4,
+              fontSize: 12,
+            }}
+          >
+            {categories.map((cat) => (
+              <option key={cat} value={cat}>
+                {cat}
+              </option>
+            ))}
+          </select>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="action-btn primary" onClick={handleAddBookmark} style={{ flex: 1, fontSize: 12 }}>
+              儲存
+            </button>
+            <button className="action-btn" onClick={() => setShowAddDialog(false)} style={{ fontSize: 12 }}>
+              取消
+            </button>
+          </div>
+          {!currentPosition && (
+            <div style={{ fontSize: 11, color: '#f44336', marginTop: 6 }}>
+              目前無可用位置
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Category manager */}
+      {showCategoryMgr && (
+        <div
+          style={{
+            background: '#2a2a2e',
+            border: '1px solid #444',
+            borderRadius: 6,
+            padding: 12,
+            marginBottom: 8,
+          }}
+        >
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6, opacity: 0.7 }}>
+            管理分類
+          </div>
+          {categories.map((cat) => (
+            <div
+              key={cat}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '4px 0',
+                fontSize: 12,
+              }}
+            >
+              <div
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  background: getCategoryColor(cat),
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ flex: 1 }}>{cat}</span>
+              {cat !== 'Default' && (
+                <button
+                  onClick={() => onCategoryDelete(cat)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#f44336',
+                    cursor: 'pointer',
+                    padding: '2px 4px',
+                    fontSize: 11,
+                  }}
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              )}
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+            <input
+              type="text"
+              className="search-input"
+              placeholder="新增分類"
+              value={newCategoryName}
+              onChange={(e) => setNewCategoryName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && newCategoryName.trim()) {
+                  onCategoryAdd(newCategoryName.trim());
+                  setNewCategoryName('');
+                }
+              }}
+              style={{ flex: 1 }}
+            />
+            <button
+              className="action-btn"
+              onClick={() => {
+                if (newCategoryName.trim()) {
+                  onCategoryAdd(newCategoryName.trim());
+                  setNewCategoryName('');
+                }
+              }}
+              style={{ fontSize: 11 }}
+            >
+              新增
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Bookmark groups */}
+      {Object.entries(bookmarksByCategory).map(([cat, bms]) => (
+        <div key={cat} className="bookmark-group" style={{ marginBottom: 4 }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '5px 4px',
+              cursor: 'pointer',
+              fontSize: 12,
+              fontWeight: 600,
+              opacity: 0.8,
+            }}
+            onClick={() => toggleCategory(cat)}
+          >
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              style={{
+                transform: collapsed[cat] ? 'rotate(0deg)' : 'rotate(90deg)',
+                transition: 'transform 0.2s',
+              }}
+            >
+              <polyline points="9,18 15,12 9,6" />
+            </svg>
+            <div
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: getCategoryColor(cat),
+                flexShrink: 0,
+              }}
+            />
+            <span>{cat}</span>
+            <span style={{ marginLeft: 'auto', opacity: 0.4, fontWeight: 400, fontSize: 10 }}>
+              {bms.length}
+            </span>
+          </div>
+
+          {!collapsed[cat] && (
+            <div style={{ paddingLeft: 20 }}>
+              {bms.length === 0 && (
+                <div style={{ fontSize: 11, opacity: 0.4, padding: '4px 0' }}>空白</div>
+              )}
+              {bms.map((bm) => (
+                <div
+                  key={bm.id ?? `${bm.lat}-${bm.lng}`}
+                  className="bookmark-item"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '5px 6px',
+                    cursor: 'pointer',
+                    borderRadius: 4,
+                    fontSize: 12,
+                    transition: 'background 0.15s',
+                  }}
+                  onClick={() => onBookmarkClick(bm)}
+                  onContextMenu={(e) => handleContextMenu(e, bm)}
+                  onMouseEnter={(e) => {
+                    (e.currentTarget as HTMLDivElement).style.background = '#3a3a3e';
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLDivElement).style.background = 'transparent';
+                  }}
+                >
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    style={{ opacity: 0.5, flexShrink: 0 }}
+                  >
+                    <path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z" />
+                  </svg>
+                  {editingId === bm.id ? (
+                    <input
+                      type="text"
+                      className="search-input"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && bm.id) {
+                          onBookmarkEdit(bm.id, { name: editName });
+                          setEditingId(null);
+                        }
+                        if (e.key === 'Escape') setEditingId(null);
+                      }}
+                      onBlur={() => setEditingId(null)}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ flex: 1, padding: '2px 4px', fontSize: 11 }}
+                      autoFocus
+                    />
+                  ) : (
+                    <span
+                      style={{
+                        flex: 1,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {bm.name}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+
+      {bookmarks.length === 0 && (
+        <div style={{ fontSize: 12, opacity: 0.5, padding: '8px 0', textAlign: 'center' }}>
+          尚無收藏
+        </div>
+      )}
+
+      {/* Context menu */}
+      {contextMenu && (
+        <>
+          <div
+            style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9998 }}
+            onClick={() => setContextMenu(null)}
+          />
+          <div
+            style={{
+              position: 'fixed',
+              left: contextMenu.x,
+              top: contextMenu.y,
+              zIndex: 9999,
+              background: '#2a2a2e',
+              border: '1px solid #444',
+              borderRadius: 6,
+              padding: '4px 0',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+              minWidth: 140,
+            }}
+          >
+            <div
+              style={ctxItemStyle}
+              onMouseEnter={ctxHighlight}
+              onMouseLeave={ctxUnhighlight}
+              onClick={() => {
+                if (contextMenu.bm.id) {
+                  setEditingId(contextMenu.bm.id);
+                  setEditName(contextMenu.bm.name);
+                }
+                setContextMenu(null);
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: 6 }}>
+                <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+                <path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+              </svg>
+              編輯
+            </div>
+            <div
+              style={ctxItemStyle}
+              onMouseEnter={ctxHighlight}
+              onMouseLeave={ctxUnhighlight}
+              onClick={() => {
+                if (contextMenu.bm.id) onBookmarkDelete(contextMenu.bm.id);
+                setContextMenu(null);
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f44336" strokeWidth="2" style={{ marginRight: 6 }}>
+                <polyline points="3,6 5,6 21,6" />
+                <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+              </svg>
+              <span style={{ color: '#f44336' }}>刪除</span>
+            </div>
+            {categories.length > 1 && (
+              <>
+                <div style={{ height: 1, background: '#444', margin: '4px 0' }} />
+                <div style={{ padding: '4px 12px', fontSize: 10, opacity: 0.5 }}>移動到：</div>
+                {categories
+                  .filter((c) => c !== contextMenu.bm.category)
+                  .map((cat) => (
+                    <div
+                      key={cat}
+                      style={ctxItemStyle}
+                      onMouseEnter={ctxHighlight}
+                      onMouseLeave={ctxUnhighlight}
+                      onClick={() => {
+                        if (contextMenu.bm.id) {
+                          onBookmarkEdit(contextMenu.bm.id, { category: cat });
+                        }
+                        setContextMenu(null);
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: '50%',
+                          background: getCategoryColor(cat),
+                          marginRight: 6,
+                        }}
+                      />
+                      {cat}
+                    </div>
+                  ))}
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+const ctxItemStyle: React.CSSProperties = {
+  padding: '6px 12px',
+  cursor: 'pointer',
+  fontSize: 12,
+  display: 'flex',
+  alignItems: 'center',
+  color: '#e0e0e0',
+  transition: 'background 0.15s',
+};
+
+function ctxHighlight(e: React.MouseEvent<HTMLDivElement>) {
+  (e.currentTarget as HTMLDivElement).style.background = '#3a3a3e';
+}
+function ctxUnhighlight(e: React.MouseEvent<HTMLDivElement>) {
+  (e.currentTarget as HTMLDivElement).style.background = 'transparent';
+}
+
+export default BookmarkList;

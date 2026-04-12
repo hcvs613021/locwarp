@@ -1,0 +1,317 @@
+import React, { useState } from 'react';
+
+interface Device {
+  id: string;
+  name: string;
+  iosVersion: string;
+  connectionType?: string;
+}
+
+interface TunnelStatus {
+  running: boolean;
+  rsd_address?: string;
+  rsd_port?: number;
+}
+
+interface DeviceStatusProps {
+  device: Device | null;
+  devices: Device[];
+  isConnected: boolean;
+  onScan: () => void;
+  onSelect: (id: string) => void;
+  onStartWifiTunnel?: (ip: string, port?: number) => Promise<any>;
+  onStopTunnel?: () => Promise<void>;
+  tunnelStatus?: TunnelStatus;
+}
+
+const DeviceStatus: React.FC<DeviceStatusProps> = ({
+  device,
+  devices,
+  isConnected,
+  onScan,
+  onSelect,
+  onStartWifiTunnel,
+  onStopTunnel,
+  tunnelStatus = { running: false },
+}) => {
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [tunnelIp, setTunnelIp] = useState('192.168.0.205');
+  const [tunnelPort, setTunnelPort] = useState('49152');
+  const [tunnelConnecting, setTunnelConnecting] = useState(false);
+  const [tunnelError, setTunnelError] = useState<string | null>(null);
+
+  return (
+    <div className={`device-status ${isConnected ? 'device-connected' : 'device-disconnected'}`}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        {/* Status indicator dot */}
+        <div
+          style={{
+            width: 10,
+            height: 10,
+            borderRadius: '50%',
+            background: isConnected ? '#4caf50' : '#f44336',
+            flexShrink: 0,
+            boxShadow: isConnected ? '0 0 6px #4caf50' : '0 0 6px #f44336',
+          }}
+        />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {device ? (
+            <>
+              <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {device.name}
+              </div>
+              <div style={{ fontSize: 11, opacity: 0.6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                iOS {device.iosVersion}
+                {device.connectionType && (
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 3,
+                      padding: '1px 5px',
+                      borderRadius: 3,
+                      fontSize: 10,
+                      background: device.connectionType === 'Network' ? 'rgba(76, 175, 80, 0.15)' : 'rgba(108, 140, 255, 0.15)',
+                      color: device.connectionType === 'Network' ? '#4caf50' : '#6c8cff',
+                    }}
+                  >
+                    {device.connectionType === 'Network' ? (
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <path d="M5 12.55a11 11 0 0114 0" />
+                        <path d="M8.53 16.11a6 6 0 016.95 0" />
+                        <circle cx="12" cy="20" r="1" fill="currentColor" />
+                      </svg>
+                    ) : (
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <rect x="9" y="2" width="6" height="20" rx="1" />
+                        <line x1="9" y1="18" x2="15" y2="18" />
+                      </svg>
+                    )}
+                    {device.connectionType === 'Network' ? 'WiFi' : 'USB'}
+                  </span>
+                )}
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 13, opacity: 0.6 }}>No device</div>
+          )}
+        </div>
+        <button
+          className="action-btn"
+          onClick={onScan}
+          style={{ padding: '4px 10px', fontSize: 12 }}
+          title="Scan USB"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M1 1l4 4" />
+            <path d="M5 12a7 7 0 0114 0" />
+            <path d="M8.5 8.5a4 4 0 017 0" />
+            <circle cx="12" cy="12" r="1" fill="currentColor" />
+          </svg>
+          USB
+        </button>
+      </div>
+
+      {/* Device dropdown */}
+      {devices.length >= 1 && (
+        <div style={{ position: 'relative', marginBottom: 6 }}>
+          <button
+            className="action-btn"
+            onClick={() => setShowDropdown(!showDropdown)}
+            style={{ width: '100%', fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+          >
+            <span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: 6 }}>
+                <rect x="5" y="2" width="14" height="20" rx="2" />
+                <line x1="12" y1="18" x2="12" y2="18" />
+              </svg>
+              {devices.length} devices found
+            </span>
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              style={{ transform: showDropdown ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}
+            >
+              <polyline points="6,9 12,15 18,9" />
+            </svg>
+          </button>
+
+          {showDropdown && (
+            <div
+              style={{
+                position: 'absolute',
+                top: '100%',
+                left: 0,
+                right: 0,
+                background: '#2a2a2e',
+                border: '1px solid #444',
+                borderRadius: 4,
+                marginTop: 4,
+                zIndex: 100,
+                boxShadow: '0 4px 8px rgba(0,0,0,0.3)',
+              }}
+            >
+              {devices.map((d) => (
+                <div
+                  key={d.id}
+                  onClick={() => {
+                    onSelect(d.id);
+                    setShowDropdown(false);
+                  }}
+                  style={{
+                    padding: '8px 12px',
+                    cursor: 'pointer',
+                    fontSize: 12,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    borderBottom: '1px solid #333',
+                    background: device?.id === d.id ? '#3a3a4e' : 'transparent',
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = '#3a3a3e'; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = device?.id === d.id ? '#3a3a4e' : 'transparent'; }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="5" y="2" width="14" height="20" rx="2" />
+                    <line x1="12" y1="18" x2="12" y2="18" />
+                  </svg>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: device?.id === d.id ? 600 : 400 }}>{d.name}</div>
+                    <div style={{ opacity: 0.5, fontSize: 10, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      iOS {d.iosVersion}
+                      {d.connectionType && (
+                        <span style={{
+                          fontSize: 9,
+                          padding: '0 3px',
+                          borderRadius: 2,
+                          background: d.connectionType === 'Network' ? 'rgba(76, 175, 80, 0.15)' : 'rgba(108, 140, 255, 0.15)',
+                          color: d.connectionType === 'Network' ? '#4caf50' : '#6c8cff',
+                        }}>
+                          {d.connectionType === 'Network' ? 'WiFi' : 'USB'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {device?.id === d.id && (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4caf50" strokeWidth="3" style={{ marginLeft: 'auto' }}>
+                      <polyline points="20,6 9,17 4,12" />
+                    </svg>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* WiFi Tunnel Section */}
+      {onStartWifiTunnel && (
+        <div style={{ borderTop: '1px solid #333', paddingTop: 8, marginTop: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <span style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+              </svg>
+              WiFi Tunnel
+            </span>
+            {tunnelStatus.running && (
+              <span style={{
+                fontSize: 10, padding: '1px 6px', borderRadius: 3,
+                background: 'rgba(76, 175, 80, 0.15)', color: '#4caf50',
+                display: 'flex', alignItems: 'center', gap: 3,
+              }}>
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#4caf50' }} />
+                Active
+              </span>
+            )}
+          </div>
+
+          {tunnelStatus.running ? (
+            <div>
+              <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6, padding: '4px 6px', background: 'rgba(76, 175, 80, 0.08)', borderRadius: 3 }}>
+                <div>RSD: {tunnelStatus.rsd_address}:{tunnelStatus.rsd_port}</div>
+                <div style={{ fontSize: 10, opacity: 0.6, marginTop: 2 }}>USB can be disconnected</div>
+              </div>
+              <button
+                className="action-btn"
+                onClick={async () => {
+                  if (onStopTunnel) await onStopTunnel();
+                }}
+                style={{ width: '100%', fontSize: 11, color: '#f44336' }}
+              >
+                Stop Tunnel
+              </button>
+            </div>
+          ) : (
+            <div>
+              <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+                <input
+                  type="text"
+                  className="search-input"
+                  placeholder="iPhone IP"
+                  value={tunnelIp}
+                  onChange={(e) => setTunnelIp(e.target.value)}
+                  style={{ flex: 1, fontSize: 12 }}
+                  disabled={tunnelConnecting}
+                />
+                <input
+                  type="text"
+                  className="search-input"
+                  placeholder="Port"
+                  value={tunnelPort}
+                  onChange={(e) => setTunnelPort(e.target.value)}
+                  style={{ width: 60, fontSize: 12, textAlign: 'center' }}
+                  disabled={tunnelConnecting}
+                />
+              </div>
+              <button
+                className="action-btn primary"
+                onClick={async () => {
+                  if (!tunnelIp.trim()) return;
+                  setTunnelConnecting(true);
+                  setTunnelError(null);
+                  try {
+                    await onStartWifiTunnel(tunnelIp.trim(), parseInt(tunnelPort) || 49152);
+                  } catch (err: any) {
+                    setTunnelError(err.message || 'WiFi tunnel failed');
+                  } finally {
+                    setTunnelConnecting(false);
+                  }
+                }}
+                disabled={tunnelConnecting || !tunnelIp.trim()}
+                style={{ width: '100%', fontSize: 12 }}
+              >
+                {tunnelConnecting ? (
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{
+                      animation: 'spin 1s linear infinite',
+                    }}>
+                      <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83" />
+                    </svg>
+                    Establishing tunnel...
+                  </span>
+                ) : 'Start WiFi Tunnel'}
+              </button>
+
+              {tunnelError && (
+                <div style={{ fontSize: 11, color: '#f44336', marginTop: 4, padding: '4px 6px', background: 'rgba(244,67,54,0.1)', borderRadius: 3 }}>
+                  {tunnelError}
+                </div>
+              )}
+
+              <div style={{ fontSize: 10, opacity: 0.4, marginTop: 6 }}>
+                Requires Python 3.13+ and admin privileges. Device must be paired via USB first.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default DeviceStatus;

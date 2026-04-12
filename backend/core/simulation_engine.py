@@ -1,0 +1,484 @@
+"""Simulation engine -- central orchestrator for all movement modes."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from datetime import datetime, timedelta, timezone
+
+from models.schemas import (
+    Coordinate,
+    JoystickInput,
+    MovementMode,
+    SimulationState,
+    SimulationStatus,
+)
+from services.interpolator import RouteInterpolator
+from services.route_service import RouteService
+from config import SPEED_PROFILES
+
+from core.teleport import TeleportHandler
+from core.navigator import Navigator
+from core.route_loop import RouteLooper
+from core.joystick import JoystickHandler
+from core.multi_stop import MultiStopNavigator
+from core.random_walk import RandomWalkHandler
+from core.restore import RestoreHandler
+
+logger = logging.getLogger(__name__)
+
+
+# ── ETA Tracker ──────────────────────────────────────────────────────────
+
+class EtaTracker:
+    """Tracks progress and estimates time of arrival for route-based movement."""
+
+    def __init__(self) -> None:
+        self.total_distance: float = 0.0
+        self.traveled: float = 0.0
+        self.speed_mps: float = 0.0
+        self.start_time: float = 0.0
+
+    def start(self, total_distance: float, speed_mps: float) -> None:
+        """Initialise the tracker at the beginning of a route."""
+        self.total_distance = total_distance
+        self.traveled = 0.0
+        self.speed_mps = max(speed_mps, 0.001)  # avoid division by zero
+        self.start_time = time.monotonic()
+
+    def update(self, traveled: float) -> None:
+        """Update the distance traveled so far."""
+        self.traveled = traveled
+
+    @property
+    def progress(self) -> float:
+        """Return completion as a fraction 0.0 .. 1.0."""
+        if self.total_distance <= 0:
+            return 1.0
+        return min(self.traveled / self.total_distance, 1.0)
+
+    @property
+    def eta_seconds(self) -> float:
+        """Estimated seconds remaining."""
+        remaining = self.distance_remaining
+        if self.speed_mps <= 0:
+            return 0.0
+        return remaining / self.speed_mps
+
+    @property
+    def eta_arrival(self) -> str:
+        """ISO-8601 estimated arrival time."""
+        secs = self.eta_seconds
+        if secs <= 0:
+            return ""
+        arrival = datetime.now(timezone.utc) + timedelta(seconds=secs)
+        return arrival.isoformat(timespec="seconds")
+
+    @property
+    def distance_remaining(self) -> float:
+        """Meters still to travel."""
+        return max(self.total_distance - self.traveled, 0.0)
+
+
+# ── Simulation Engine ───────────────────────────────────────────────────
+
+class SimulationEngine:
+    """Central controller that orchestrates all movement modes.
+
+    Manages state transitions, task lifecycle, pause/resume, and provides
+    a unified status object for the UI.
+
+    Parameters
+    ----------
+    location_service
+        A ``LocationService`` instance (DVT or legacy) for the target device.
+    event_callback
+        Optional async callable ``(event_type: str, data: dict) -> None``
+        used to push realtime events over WebSocket.
+    """
+
+    def __init__(self, location_service, event_callback=None) -> None:
+        self.location_service = location_service
+        self.state: SimulationState = SimulationState.IDLE
+        self.current_position: Coordinate | None = None
+        self.event_callback = event_callback
+
+        # Task management
+        self._active_task: asyncio.Task | None = None
+        self._paused_from: SimulationState | None = None
+        self._pause_event = asyncio.Event()
+        self._pause_event.set()  # set = running, clear = paused
+        self._stop_event = asyncio.Event()
+
+        # Sub-handlers
+        self.route_service = RouteService()
+        self.eta_tracker = EtaTracker()
+        self._teleport_handler = TeleportHandler(self)
+        self._navigator = Navigator(self)
+        self._looper = RouteLooper(self)
+        self._joystick = JoystickHandler(self)
+        self._multi_stop = MultiStopNavigator(self)
+        self._random_walk = RandomWalkHandler(self)
+        self._restore_handler = RestoreHandler(self)
+
+        # Status tracking
+        self.distance_traveled: float = 0.0
+        self.distance_remaining: float = 0.0
+        self.lap_count: int = 0
+        self.segment_index: int = 0
+        self.total_segments: int = 0
+        self._current_speed_mps: float = 0.0
+
+    # ── Public API ───────────────────────────────────────────
+
+    async def teleport(self, lat: float, lng: float) -> Coordinate:
+        """Instantly move to a coordinate."""
+        return await self._teleport_handler.teleport(lat, lng)
+
+    async def navigate(
+        self, dest: Coordinate, mode: MovementMode,
+        speed_kmh: float | None = None,
+        speed_min_kmh: float | None = None,
+        speed_max_kmh: float | None = None,
+    ) -> None:
+        """Navigate from current position to *dest*."""
+        await self._ensure_stopped()
+        self._stop_event.clear()
+        self._pause_event.set()
+        self._active_task = asyncio.create_task(
+            self._navigator.navigate_to(
+                dest, mode, speed_kmh=speed_kmh,
+                speed_min_kmh=speed_min_kmh, speed_max_kmh=speed_max_kmh,
+            )
+        )
+        try:
+            await self._active_task
+        except asyncio.CancelledError:
+            logger.info("Navigation task cancelled")
+        finally:
+            self._active_task = None
+
+    async def start_loop(
+        self,
+        waypoints: list[Coordinate],
+        mode: MovementMode,
+        speed_kmh: float | None = None,
+        speed_min_kmh: float | None = None,
+        speed_max_kmh: float | None = None,
+    ) -> None:
+        """Start looping through a closed route."""
+        await self._ensure_stopped()
+        self._stop_event.clear()
+        self._pause_event.set()
+        self._active_task = asyncio.create_task(
+            self._looper.start_loop(
+                waypoints, mode, speed_kmh=speed_kmh,
+                speed_min_kmh=speed_min_kmh, speed_max_kmh=speed_max_kmh,
+            )
+        )
+        try:
+            await self._active_task
+        except asyncio.CancelledError:
+            logger.info("Loop task cancelled")
+        finally:
+            self._active_task = None
+
+    async def joystick_start(self, mode: MovementMode) -> None:
+        """Activate joystick mode."""
+        await self._joystick.start(mode)
+
+    def joystick_move(self, joystick_input: JoystickInput) -> None:
+        """Update the joystick direction/intensity (non-blocking)."""
+        self._joystick.update_input(joystick_input)
+
+    async def joystick_stop(self) -> None:
+        """Deactivate joystick mode."""
+        await self._joystick.stop()
+        if self.state == SimulationState.JOYSTICK:
+            self.state = SimulationState.IDLE
+            await self._emit("state_change", {"state": self.state.value})
+
+    async def multi_stop(
+        self,
+        waypoints: list[Coordinate],
+        mode: MovementMode,
+        stop_duration: float = 0,
+        loop: bool = False,
+        speed_kmh: float | None = None,
+        speed_min_kmh: float | None = None,
+        speed_max_kmh: float | None = None,
+    ) -> None:
+        """Navigate through waypoints with optional stops."""
+        await self._ensure_stopped()
+        self._stop_event.clear()
+        self._pause_event.set()
+        self._active_task = asyncio.create_task(
+            self._multi_stop.start(
+                waypoints, mode, stop_duration, loop, speed_kmh=speed_kmh,
+                speed_min_kmh=speed_min_kmh, speed_max_kmh=speed_max_kmh,
+            )
+        )
+        try:
+            await self._active_task
+        except asyncio.CancelledError:
+            logger.info("Multi-stop task cancelled")
+        finally:
+            self._active_task = None
+
+    async def random_walk(
+        self,
+        center: Coordinate,
+        radius_m: float,
+        mode: MovementMode,
+        min_pause: float = 5.0,
+        max_pause: float = 30.0,
+        speed_kmh: float | None = None,
+        speed_min_kmh: float | None = None,
+        speed_max_kmh: float | None = None,
+    ) -> None:
+        """Begin a random walk within a radius."""
+        await self._ensure_stopped()
+        self._stop_event.clear()
+        self._pause_event.set()
+        self._active_task = asyncio.create_task(
+            self._random_walk.start(
+                center, radius_m, mode, min_pause, max_pause, speed_kmh=speed_kmh,
+                speed_min_kmh=speed_min_kmh, speed_max_kmh=speed_max_kmh,
+            )
+        )
+        try:
+            await self._active_task
+        except asyncio.CancelledError:
+            logger.info("Random walk task cancelled")
+        except Exception:
+            logger.exception("Random walk task failed unexpectedly")
+            # Ensure we return to IDLE state
+            if self.state not in (SimulationState.IDLE, SimulationState.DISCONNECTED):
+                self.state = SimulationState.IDLE
+                await self._emit("state_change", {"state": self.state.value})
+        finally:
+            self._active_task = None
+
+    async def pause(self) -> None:
+        """Pause the active movement.
+
+        Clears the pause event so the movement loop blocks until resumed.
+        """
+        if self.state == SimulationState.PAUSED:
+            return
+        if self.state == SimulationState.IDLE:
+            return
+
+        self._paused_from = self.state
+        self.state = SimulationState.PAUSED
+        self._pause_event.clear()
+
+        await self._emit("state_change", {
+            "state": self.state.value,
+            "paused_from": self._paused_from.value if self._paused_from else None,
+        })
+        logger.info("Simulation paused (was %s)", self._paused_from)
+
+    async def resume(self) -> None:
+        """Resume a paused movement."""
+        if self.state != SimulationState.PAUSED:
+            return
+
+        prev = self._paused_from or SimulationState.IDLE
+        self.state = prev
+        self._paused_from = None
+        self._pause_event.set()
+
+        await self._emit("state_change", {"state": self.state.value})
+        logger.info("Simulation resumed to %s", self.state.value)
+
+    async def restore(self) -> None:
+        """Stop everything and clear the simulated location."""
+        await self._restore_handler.restore()
+
+    async def stop(self) -> None:
+        """Stop the current movement gracefully.
+
+        Sets the stop event so the movement loop exits, then waits for
+        the active task to finish.
+        """
+        self._stop_event.set()
+        self._pause_event.set()  # unblock if paused
+
+        # Stop joystick if active
+        if self._joystick.is_active:
+            await self._joystick.stop()
+
+        # Cancel and await the active task
+        if self._active_task is not None and not self._active_task.done():
+            self._active_task.cancel()
+            try:
+                await self._active_task
+            except asyncio.CancelledError:
+                pass
+            self._active_task = None
+
+        if self.state not in (SimulationState.IDLE, SimulationState.DISCONNECTED):
+            self.state = SimulationState.IDLE
+            await self._emit("state_change", {"state": self.state.value})
+
+        self._paused_from = None
+        logger.info("Simulation stopped")
+
+    def get_status(self) -> SimulationStatus:
+        """Build a snapshot of the current simulation status."""
+        return SimulationStatus(
+            state=self.state,
+            current_position=self.current_position,
+            progress=self.eta_tracker.progress,
+            speed_mps=self._current_speed_mps,
+            eta_seconds=self.eta_tracker.eta_seconds,
+            eta_arrival=self.eta_tracker.eta_arrival,
+            distance_remaining=self.eta_tracker.distance_remaining,
+            distance_traveled=self.distance_traveled,
+            lap_count=self.lap_count,
+            segment_index=self.segment_index,
+            total_segments=self.total_segments,
+            is_paused=self.state == SimulationState.PAUSED,
+        )
+
+    # ── Internal helpers ─────────────────────────────────────
+
+    async def _emit(self, event_type: str, data: dict) -> None:
+        """Send an event to the WebSocket callback, if one is registered."""
+        if self.event_callback is not None:
+            try:
+                await self.event_callback(event_type, data)
+            except Exception:
+                logger.exception("Event callback error for '%s'", event_type)
+
+    async def _set_position(self, lat: float, lng: float) -> None:
+        """Push a coordinate to the device and update internal state."""
+        await self.location_service.set(lat, lng)
+        self.current_position = Coordinate(lat=lat, lng=lng)
+
+    async def _move_along_route(
+        self,
+        coords: list[Coordinate],
+        speed_profile: dict,
+    ) -> None:
+        """Core movement loop shared by navigate, loop, multi-stop, and
+        random walk modes.
+
+        1. Interpolates the route into evenly-timed points.
+        2. Iterates through each point, updating the device position.
+        3. Respects pause/stop events between each step.
+        4. Tracks distance, ETA, and emits position updates.
+
+        Parameters
+        ----------
+        coords
+            Ordered list of route coordinates.
+        speed_profile
+            Dict with keys ``speed_mps``, ``jitter``, ``update_interval``.
+        """
+        speed_mps = speed_profile["speed_mps"]
+        jitter = speed_profile.get("jitter", 0.3)
+        update_interval = speed_profile.get("update_interval", 1.0)
+
+        self._current_speed_mps = speed_mps
+
+        # Calculate total route distance
+        total_distance = RouteInterpolator.haversine(
+            coords[0].lat, coords[0].lng,
+            coords[0].lat, coords[0].lng,
+        )  # will be recalculated below
+        total_distance = 0.0
+        for i in range(len(coords) - 1):
+            total_distance += RouteInterpolator.haversine(
+                coords[i].lat, coords[i].lng,
+                coords[i + 1].lat, coords[i + 1].lng,
+            )
+
+        self.eta_tracker.start(total_distance, speed_mps)
+        self.distance_remaining = total_distance
+
+        # Interpolate the route into dense timed points
+        timed_points = RouteInterpolator.interpolate(
+            coords, speed_mps, update_interval,
+        )
+
+        if not timed_points:
+            return
+
+        accumulated_distance = 0.0
+        prev_lat = timed_points[0]["lat"]
+        prev_lng = timed_points[0]["lng"]
+
+        for idx, point in enumerate(timed_points):
+            # ── Check stop ──
+            if self._stop_event.is_set():
+                logger.debug("Stop event detected at point %d/%d", idx, len(timed_points))
+                break
+
+            # ── Check pause ──
+            if not self._pause_event.is_set():
+                logger.debug("Paused at point %d/%d", idx, len(timed_points))
+                await self._pause_event.wait()
+                # After resume, re-check stop
+                if self._stop_event.is_set():
+                    break
+
+            lat = point["lat"]
+            lng = point["lng"]
+            bearing = point.get("bearing", 0.0)
+
+            # Calculate distance from previous point
+            step_dist = RouteInterpolator.haversine(prev_lat, prev_lng, lat, lng)
+            accumulated_distance += step_dist
+
+            # Add GPS jitter for realism
+            jittered_lat, jittered_lng = RouteInterpolator.add_jitter(lat, lng, jitter)
+
+            # Push position to device
+            await self._set_position(jittered_lat, jittered_lng)
+
+            # Update tracking
+            self.distance_traveled += step_dist
+            self.distance_remaining = max(total_distance - accumulated_distance, 0.0)
+            self.eta_tracker.update(accumulated_distance)
+            self.segment_index = min(idx, self.total_segments)
+
+            # Emit position update
+            await self._emit("position_update", {
+                "lat": jittered_lat,
+                "lng": jittered_lng,
+                "bearing": bearing,
+                "speed_mps": speed_mps,
+                "progress": self.eta_tracker.progress,
+                "distance_remaining": self.distance_remaining,
+                "distance_traveled": self.distance_traveled,
+                "eta_seconds": self.eta_tracker.eta_seconds,
+            })
+
+            prev_lat, prev_lng = lat, lng
+
+            # Wait for the next tick (unless this is the last point)
+            if idx < len(timed_points) - 1:
+                next_point = timed_points[idx + 1]
+                wait_time = next_point["timestamp_offset"] - point["timestamp_offset"]
+                if wait_time > 0:
+                    try:
+                        await asyncio.wait_for(
+                            self._stop_event.wait(),
+                            timeout=wait_time,
+                        )
+                        # Stop event was set during the wait
+                        break
+                    except asyncio.TimeoutError:
+                        # Normal -- time to move to the next point
+                        pass
+
+        self._current_speed_mps = 0.0
+
+    async def _ensure_stopped(self) -> None:
+        """Make sure no movement is active before starting a new one."""
+        if self.state not in (SimulationState.IDLE, SimulationState.DISCONNECTED):
+            await self.stop()
+        self._stop_event.clear()

@@ -1,0 +1,347 @@
+import { useState, useCallback, useEffect, useRef } from 'react'
+import * as api from '../services/api'
+import type { WsMessage } from './useWebSocket'
+
+export enum SimMode {
+  Teleport = 'teleport',
+  Navigate = 'navigate',
+  Loop = 'loop',
+  Joystick = 'joystick',
+  MultiStop = 'multistop',
+  RandomWalk = 'randomwalk',
+}
+
+export enum MoveMode {
+  Walking = 'walking',
+  Running = 'running',
+  Driving = 'driving',
+}
+
+export interface LatLng {
+  lat: number
+  lng: number
+}
+
+export interface SimulationStatus {
+  running: boolean
+  paused: boolean
+  mode: SimMode | null
+  speed: number
+  state?: string
+  distance_remaining?: number
+  distance_traveled?: number
+}
+
+export function useSimulation(wsMessage: WsMessage | null) {
+  const [mode, setMode] = useState<SimMode>(SimMode.Teleport)
+  const [moveMode, setMoveMode] = useState<MoveMode>(MoveMode.Walking)
+  const [status, setStatus] = useState<SimulationStatus>({
+    running: false,
+    paused: false,
+    mode: null,
+    speed: 0,
+  })
+  const [currentPosition, setCurrentPosition] = useState<LatLng | null>(null)
+  const [destination, setDestination] = useState<LatLng | null>(null)
+  const [progress, setProgress] = useState(0)
+  const [eta, setEta] = useState<number | null>(null)
+  const [waypoints, setWaypoints] = useState<LatLng[]>([])
+  const [routePath, setRoutePath] = useState<LatLng[]>([])
+  const [customSpeedKmh, setCustomSpeedKmh] = useState<number | null>(null)
+  const [speedMinKmh, setSpeedMinKmh] = useState<number | null>(null)
+  const [speedMaxKmh, setSpeedMaxKmh] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // Process incoming WS messages
+  useEffect(() => {
+    if (!wsMessage) return
+
+    switch (wsMessage.type) {
+      case 'position_update': {
+        const { lat, lng } = wsMessage.data
+        if (typeof lat === 'number' && typeof lng === 'number') {
+          setCurrentPosition({ lat, lng })
+        }
+        if (wsMessage.data.progress != null) {
+          setProgress(wsMessage.data.progress)
+        }
+        {
+          const etaVal = wsMessage.data.eta_seconds ?? wsMessage.data.eta
+          if (etaVal != null) setEta(etaVal)
+        }
+        {
+          const dr = wsMessage.data.distance_remaining
+          const dt = wsMessage.data.distance_traveled
+          if (dr != null || dt != null) {
+            setStatus((prev) => ({
+              ...prev,
+              ...(dr != null ? { distance_remaining: dr } : {}),
+              ...(dt != null ? { distance_traveled: dt } : {}),
+            }))
+          }
+        }
+        break
+      }
+      case 'simulation_state': {
+        const d = wsMessage.data
+        setStatus({
+          running: !!d.running,
+          paused: !!d.paused,
+          mode: d.mode ?? null,
+          speed: d.speed ?? 0,
+          state: d.state,
+          distance_remaining: d.distance_remaining,
+          distance_traveled: d.distance_traveled,
+        })
+        if (d.mode) setMode(d.mode)
+        if (d.progress != null) setProgress(d.progress)
+        if (d.eta != null) setEta(d.eta)
+        if (d.destination) setDestination(d.destination)
+        if (d.waypoints) setWaypoints(d.waypoints)
+        break
+      }
+      case 'simulation_complete': {
+        setStatus((prev) => ({ ...prev, running: false, paused: false }))
+        setProgress(1)
+        setEta(null)
+        break
+      }
+      case 'route_path': {
+        const pts = wsMessage.data?.coords
+        if (Array.isArray(pts)) {
+          setRoutePath(pts.map((p: any) => ({ lat: p.lat ?? p[0], lng: p.lng ?? p[1] })))
+        }
+        break
+      }
+      case 'state_change': {
+        const st = wsMessage.data?.state
+        if (st === 'idle' || st === 'disconnected') {
+          setStatus((prev) => ({ ...prev, running: false, paused: false, state: st }))
+          setRoutePath([])
+        } else if (st === 'paused') {
+          setStatus((prev) => ({ ...prev, paused: true, state: st }))
+        } else if (st) {
+          setStatus((prev) => ({ ...prev, running: true, paused: false, state: st }))
+        }
+        break
+      }
+      case 'simulation_error': {
+        setError(wsMessage.data?.message ?? 'Simulation error')
+        break
+      }
+    }
+  }, [wsMessage])
+
+  const clearError = useCallback(() => setError(null), [])
+
+  const teleport = useCallback(async (lat: number, lng: number) => {
+    setError(null)
+    try {
+      setMode(SimMode.Teleport)
+      const res = await api.teleport(lat, lng)
+      setCurrentPosition({ lat, lng })
+      setDestination(null)
+      setProgress(0)
+      setEta(null)
+      return res
+    } catch (err: any) {
+      setError(err.message)
+      throw err
+    }
+  }, [])
+
+  const navigate = useCallback(
+    async (lat: number, lng: number) => {
+      setError(null)
+      try {
+        setMode(SimMode.Navigate)
+        setDestination({ lat, lng })
+        setProgress(0)
+        const res = await api.navigate(lat, lng, moveMode, { speed_kmh: customSpeedKmh, speed_min_kmh: speedMinKmh, speed_max_kmh: speedMaxKmh })
+        setStatus((prev) => ({ ...prev, running: true, paused: false, mode: SimMode.Navigate }))
+        return res
+      } catch (err: any) {
+        setError(err.message)
+        throw err
+      }
+    },
+    [moveMode, customSpeedKmh, speedMinKmh, speedMaxKmh],
+  )
+
+  const startLoop = useCallback(
+    async (wps: LatLng[]) => {
+      setError(null)
+      try {
+        setMode(SimMode.Loop)
+        setWaypoints(wps)
+        setProgress(0)
+        const res = await api.startLoop(wps, moveMode, { speed_kmh: customSpeedKmh, speed_min_kmh: speedMinKmh, speed_max_kmh: speedMaxKmh })
+        setStatus((prev) => ({ ...prev, running: true, paused: false, mode: SimMode.Loop }))
+        return res
+      } catch (err: any) {
+        setError(err.message)
+        throw err
+      }
+    },
+    [moveMode, customSpeedKmh, speedMinKmh, speedMaxKmh],
+  )
+
+  const multiStop = useCallback(
+    async (wps: LatLng[], stopDuration: number, loop: boolean) => {
+      setError(null)
+      try {
+        setMode(SimMode.MultiStop)
+        setWaypoints(wps)
+        setProgress(0)
+        const res = await api.multiStop(wps, moveMode, stopDuration, loop, { speed_kmh: customSpeedKmh, speed_min_kmh: speedMinKmh, speed_max_kmh: speedMaxKmh })
+        setStatus((prev) => ({ ...prev, running: true, paused: false, mode: SimMode.MultiStop }))
+        return res
+      } catch (err: any) {
+        setError(err.message)
+        throw err
+      }
+    },
+    [moveMode, customSpeedKmh, speedMinKmh, speedMaxKmh],
+  )
+
+  const randomWalk = useCallback(
+    async (center: LatLng, radiusM: number) => {
+      setError(null)
+      try {
+        setMode(SimMode.RandomWalk)
+        setProgress(0)
+        const res = await api.randomWalk(center, radiusM, moveMode, { speed_kmh: customSpeedKmh, speed_min_kmh: speedMinKmh, speed_max_kmh: speedMaxKmh })
+        setStatus((prev) => ({ ...prev, running: true, paused: false, mode: SimMode.RandomWalk }))
+        return res
+      } catch (err: any) {
+        setError(err.message)
+        throw err
+      }
+    },
+    [moveMode, customSpeedKmh, speedMinKmh, speedMaxKmh],
+  )
+
+  const joystickStart = useCallback(async () => {
+    setError(null)
+    try {
+      setMode(SimMode.Joystick)
+      const res = await api.joystickStart(moveMode)
+      setStatus((prev) => ({ ...prev, running: true, paused: false, mode: SimMode.Joystick }))
+      return res
+    } catch (err: any) {
+      setError(err.message)
+      throw err
+    }
+  }, [moveMode])
+
+  const joystickStop = useCallback(async () => {
+    setError(null)
+    try {
+      const res = await api.joystickStop()
+      setMode(null)
+      setStatus((prev) => ({ ...prev, running: false, paused: false, mode: null }))
+      return res
+    } catch (err: any) {
+      setError(err.message)
+      throw err
+    }
+  }, [])
+
+  const pause = useCallback(async () => {
+    setError(null)
+    try {
+      const res = await api.pauseSim()
+      setStatus((prev) => ({ ...prev, paused: true }))
+      return res
+    } catch (err: any) {
+      setError(err.message)
+      throw err
+    }
+  }, [])
+
+  const resume = useCallback(async () => {
+    setError(null)
+    try {
+      const res = await api.resumeSim()
+      setStatus((prev) => ({ ...prev, paused: false }))
+      return res
+    } catch (err: any) {
+      setError(err.message)
+      throw err
+    }
+  }, [])
+
+  const restore = useCallback(async () => {
+    setError(null)
+    try {
+      const res = await api.restoreSim()
+      setMode(null)
+      setStatus({ running: false, paused: false, mode: null, speed: 0 })
+      setDestination(null)
+      setProgress(0)
+      setEta(null)
+      setWaypoints([])
+      setRoutePath([])
+      return res
+    } catch (err: any) {
+      setError(err.message)
+      throw err
+    }
+  }, [])
+
+  // Fetch initial status on mount
+  const initialFetched = useRef(false)
+  useEffect(() => {
+    if (initialFetched.current) return
+    initialFetched.current = true
+    api.getStatus().then((res) => {
+      if (res.position) {
+        setCurrentPosition({ lat: res.position.lat, lng: res.position.lng })
+      }
+      if (res.mode) setMode(res.mode)
+      if (res.running != null || res.paused != null) {
+        setStatus({
+          running: !!res.running,
+          paused: !!res.paused,
+          mode: res.mode ?? null,
+          speed: res.speed ?? 0,
+        })
+      }
+    }).catch(() => {
+      // backend may not be running yet
+    })
+  }, [])
+
+  return {
+    mode,
+    setMode,
+    moveMode,
+    setMoveMode,
+    status,
+    currentPosition,
+    destination,
+    progress,
+    eta,
+    waypoints,
+    setWaypoints,
+    routePath,
+    customSpeedKmh,
+    setCustomSpeedKmh,
+    speedMinKmh,
+    setSpeedMinKmh,
+    speedMaxKmh,
+    setSpeedMaxKmh,
+    error,
+    clearError,
+    teleport,
+    navigate,
+    startLoop,
+    multiStop,
+    randomWalk,
+    joystickStart,
+    joystickStop,
+    pause,
+    resume,
+    restore,
+  }
+}
