@@ -215,13 +215,20 @@ const App: React.FC = () => {
     sim.setWaypoints(route.waypoints.map((w: any) => ({ lat: w.lat, lng: w.lng })))
   }, [savedRoutes, sim])
 
-  const handleRouteSave = useCallback((name: string) => {
-    if (sim.waypoints.length > 0) {
-      api.saveRoute({ name, waypoints: sim.waypoints, profile: sim.moveMode })
-        .then(() => api.getSavedRoutes().then(setSavedRoutes))
-        .catch(() => {})
+  const handleRouteSave = useCallback(async (name: string) => {
+    if (sim.waypoints.length === 0) {
+      showToast('請先加入至少一個路徑點')
+      return
     }
-  }, [sim])
+    try {
+      await api.saveRoute({ name, waypoints: sim.waypoints, profile: sim.moveMode })
+      const routes = await api.getSavedRoutes()
+      setSavedRoutes(routes)
+      showToast(`已儲存路線「${name}」`)
+    } catch (err: any) {
+      showToast(`儲存失敗: ${err.message || '未知錯誤'}`)
+    }
+  }, [sim, showToast])
 
   const handleGpxImport = useCallback(async (file: File) => {
     try {

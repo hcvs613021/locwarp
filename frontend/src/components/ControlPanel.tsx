@@ -632,7 +632,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
               ) : (
                 <>
                   <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>
-                    目前路徑點: {currentWaypointsCount} 個 — 輸入名稱後按儲存即可保存
+                    目前路徑點: {currentWaypointsCount} 個,輸入名稱後按儲存即可保存
                   </div>
                   <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
                     <input
