@@ -51,6 +51,25 @@ export function useSimulation(wsMessage: WsMessage | null) {
   const [speedMinKmh, setSpeedMinKmh] = useState<number | null>(null)
   const [speedMaxKmh, setSpeedMaxKmh] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Random-walk pause countdown (unix epoch seconds of when pause ends)
+  const [pauseEndAt, setPauseEndAt] = useState<number | null>(null)
+  const [pauseRemaining, setPauseRemaining] = useState<number | null>(null)
+
+  // Tick the pause countdown at 1 Hz
+  useEffect(() => {
+    if (pauseEndAt == null) {
+      setPauseRemaining(null)
+      return
+    }
+    const tick = () => {
+      const rem = Math.max(0, Math.round((pauseEndAt - Date.now()) / 1000))
+      setPauseRemaining(rem)
+      if (rem <= 0) setPauseEndAt(null)
+    }
+    tick()
+    const id = setInterval(tick, 250)
+    return () => clearInterval(id)
+  }, [pauseEndAt])
 
   // Process incoming WS messages
   useEffect(() => {
@@ -104,6 +123,18 @@ export function useSimulation(wsMessage: WsMessage | null) {
         setStatus((prev) => ({ ...prev, running: false, paused: false }))
         setProgress(1)
         setEta(null)
+        setPauseEndAt(null)
+        break
+      }
+      case 'random_walk_pause': {
+        const dur = wsMessage.data?.duration_seconds
+        if (typeof dur === 'number' && dur > 0) {
+          setPauseEndAt(Date.now() + dur * 1000)
+        }
+        break
+      }
+      case 'random_walk_pause_end': {
+        setPauseEndAt(null)
         break
       }
       case 'route_path': {
@@ -331,6 +362,7 @@ export function useSimulation(wsMessage: WsMessage | null) {
     setSpeedMinKmh,
     speedMaxKmh,
     setSpeedMaxKmh,
+    pauseRemaining,
     error,
     clearError,
     teleport,

@@ -339,7 +339,7 @@ const DeviceStatus: React.FC<DeviceStatusProps> = ({
               )}
 
               <div style={{ fontSize: 10, opacity: 0.4, marginTop: 6 }}>
-                Requires Python 3.13+ and admin privileges. Device must be paired via USB first.
+                請使用身分管理員開啟 LocWarp,必須先通過 USB 信任。
               </div>
             </div>
           )}

@@ -300,7 +300,7 @@ const App: React.FC = () => {
           randomWalkRadius={randomWalkRadius}
           onRandomWalkRadiusChange={setRandomWalkRadius}
           currentWaypointsCount={sim.waypoints.length}
-          modeExtraSection={(sim.mode === SimMode.Loop || sim.mode === SimMode.MultiStop || sim.mode === SimMode.Navigate) ? (
+          modeExtraSection={(sim.mode === SimMode.Loop || sim.mode === SimMode.MultiStop) ? (
           <div className="section" style={{ margin: '0 0 8px 0' }}>
             <div className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -396,6 +396,33 @@ const App: React.FC = () => {
           traveledDistance={sim.status?.distance_traveled ?? 0}
           eta={sim.eta ?? 0}
         />
+        {sim.pauseRemaining != null && sim.pauseRemaining > 0 && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 38,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              zIndex: 901,
+              background: 'rgba(255, 152, 0, 0.95)',
+              color: '#1a1a1a',
+              padding: '6px 14px',
+              borderRadius: 18,
+              fontSize: 12,
+              fontWeight: 600,
+              boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="4" width="4" height="16" rx="1" />
+              <rect x="14" y="4" width="4" height="16" rx="1" />
+            </svg>
+            隨機漫步暫停中 · 剩餘 {sim.pauseRemaining}s
+          </div>
+        )}
         <MapView
           currentPosition={currentPos}
           destination={destPos}
