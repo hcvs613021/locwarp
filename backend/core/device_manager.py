@@ -462,7 +462,7 @@ class DeviceManager:
                 )
                 try:
                     await rsd.close()
-                except Exception:
+                except (OSError, ConnectionError):
                     pass
                 await _asyncio.sleep(min(0.5 * attempt, 2.0))
 
@@ -647,5 +647,5 @@ def _guess_local_subnet() -> str | None:
         # Return the /24 base
         parts = local_ip.rsplit(".", 1)
         return f"{parts[0]}.0"
-    except Exception:
+    except (OSError, IndexError):
         return None

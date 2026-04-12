@@ -223,6 +223,22 @@ const App: React.FC = () => {
     }
   }, [sim])
 
+  const handleGpxImport = useCallback(async (file: File) => {
+    try {
+      const res = await api.importGpx(file)
+      const routes = await api.getSavedRoutes()
+      setSavedRoutes(routes)
+      showToast(`已匯入 ${res.points} 個路徑點`)
+    } catch (err: any) {
+      showToast(`匯入失敗: ${err.message || '未知錯誤'}`)
+    }
+  }, [showToast])
+
+  const handleGpxExport = useCallback((id: string) => {
+    const url = api.exportGpxUrl(id)
+    window.open(url, '_blank')
+  }, [])
+
   // Build props for components
   const currentPos = sim.currentPosition
     ? { lat: sim.currentPosition.lat, lng: sim.currentPosition.lng }
@@ -316,6 +332,8 @@ const App: React.FC = () => {
             if (cat) bm.deleteCategory(cat.id)
           }}
           savedRoutes={savedRoutes.map(r => ({ id: r.id, name: r.name, waypoints: r.waypoints ?? [] }))}
+          onRouteGpxImport={handleGpxImport}
+          onRouteGpxExport={handleGpxExport}
           onRouteLoad={handleRouteLoad}
           onRouteSave={handleRouteSave}
           randomWalkRadius={randomWalkRadius}

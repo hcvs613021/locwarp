@@ -16,7 +16,7 @@ from models.schemas import (
 )
 from services.interpolator import RouteInterpolator
 from services.route_service import RouteService
-from config import SPEED_PROFILES
+from config import SPEED_PROFILES, SpeedProfile
 
 from core.teleport import TeleportHandler
 from core.navigator import Navigator
@@ -361,7 +361,7 @@ class SimulationEngine:
     async def _move_along_route(
         self,
         coords: list[Coordinate],
-        speed_profile: dict,
+        speed_profile: "SpeedProfile",
     ) -> None:
         """Core movement loop shared by navigate, loop, multi-stop, and
         random walk modes.

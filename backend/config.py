@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import TypedDict
 
 # Paths
 DATA_DIR = Path.home() / ".locwarp"
@@ -13,14 +14,23 @@ OSRM_BASE_URL = "https://router.project-osrm.org"
 NOMINATIM_BASE_URL = "https://nominatim.openstreetmap.org"
 NOMINATIM_USER_AGENT = "LocWarp/0.1"
 
+
+class SpeedProfile(TypedDict):
+    """Runtime speed profile consumed by the simulation engine."""
+    speed_mps: float        # metres per second
+    jitter: float           # ± jitter added to each tick for realism (metres)
+    update_interval: float  # tick period (seconds)
+
+
 # Speed profiles (m/s)
-SPEED_PROFILES = {
+SPEED_PROFILES: dict[str, SpeedProfile] = {
     "walking": {"speed_mps": 1.4, "jitter": 0.3, "update_interval": 1.0},
     "running": {"speed_mps": 2.8, "jitter": 0.5, "update_interval": 1.0},
     "driving": {"speed_mps": 11.1, "jitter": 1.0, "update_interval": 0.5},
 }
 
-def make_speed_profile(speed_kmh: float) -> dict:
+
+def make_speed_profile(speed_kmh: float) -> SpeedProfile:
     """Build a speed profile dict from a km/h value."""
     speed_mps = speed_kmh / 3.6
     jitter = min(speed_mps * 0.2, 1.5)
@@ -33,7 +43,7 @@ def resolve_speed_profile(
     speed_kmh: float | None = None,
     speed_min_kmh: float | None = None,
     speed_max_kmh: float | None = None,
-) -> dict:
+) -> SpeedProfile:
     """Return a speed profile, picking a random km/h from the range if provided.
     Precedence: range > fixed custom > mode default."""
     import random

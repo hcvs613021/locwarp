@@ -35,8 +35,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Default device settings
-DEFAULT_UDID = "00008140-001C096E02EA801C"
-DEFAULT_IP = "192.168.0.205"
+DEFAULT_UDID = None  # caller must supply or auto-detect
+DEFAULT_IP = ""
 DEFAULT_REMOTEPAIRING_PORT = 49152
 
 
@@ -111,8 +111,8 @@ async def run_tunnel(udid: str, ip: str, port: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="LocWarp WiFi Tunnel")
-    parser.add_argument("--udid", default=DEFAULT_UDID, help="Device UDID")
-    parser.add_argument("--ip", default=DEFAULT_IP, help="Device WiFi IP address")
+    parser.add_argument("--udid", default=DEFAULT_UDID, help="Device UDID (auto-detected when omitted)")
+    parser.add_argument("--ip", default=DEFAULT_IP, help="Device WiFi IP address (required)")
     parser.add_argument(
         "--port",
         type=int,
@@ -120,6 +120,22 @@ def main() -> None:
         help="RemotePairing service port",
     )
     args = parser.parse_args()
+
+    if not args.udid:
+        # Try to auto-detect from a currently attached USB device
+        try:
+            from pymobiledevice3.usbmux import list_devices
+            devs = list_devices()
+            if devs:
+                args.udid = devs[0].serial
+        except Exception:
+            pass
+        if not args.udid:
+            args.udid = "auto"  # harmless placeholder; WiFi path does not need exact match
+
+    if not args.ip:
+        print("ERROR: --ip is required", file=sys.stderr)
+        sys.exit(2)
 
     if sys.version_info < (3, 13):
         print(

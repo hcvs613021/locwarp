@@ -126,6 +126,10 @@ export function useSimulation(wsMessage: WsMessage | null) {
         setPauseEndAt(null)
         break
       }
+      case 'tunnel_lost': {
+        setError('WiFi Tunnel 連線中斷,請重新建立')
+        break
+      }
       case 'pause_countdown':
       case 'random_walk_pause': {
         const dur = wsMessage.data?.duration_seconds

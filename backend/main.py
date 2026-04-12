@@ -45,8 +45,8 @@ class AppState:
                 cd = data.get("cooldown_enabled")
                 if cd is not None:
                     self.cooldown_timer.enabled = cd
-            except Exception:
-                pass
+            except (json.JSONDecodeError, OSError, ValueError, KeyError):
+                logger.warning("Settings file malformed or unreadable; using defaults", exc_info=True)
 
     def save_settings(self):
         data = {

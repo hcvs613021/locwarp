@@ -16,6 +16,28 @@ async function fetchWithRetry(url: string, opts: RequestInit, maxAttempts = 15):
   throw lastErr ?? new Error('fetch failed')
 }
 
+// Map of backend error codes → localised Chinese messages
+const ERROR_I18N: Record<string, string> = {
+  python313_missing: '需要 Python 3.13+ 才能啟動 WiFi Tunnel',
+  tunnel_script_missing: '找不到 wifi_tunnel.py 腳本',
+  tunnel_spawn_failed: '無法啟動 Tunnel 進程',
+  tunnel_exited: 'Tunnel 進程異常結束',
+  tunnel_timeout: 'Tunnel 啟動逾時,請確認 iPhone 解鎖且與電腦同網段',
+  no_device: '尚未連接任何 iOS 裝置,請先透過 USB 連線',
+  no_position: '尚未取得目前位置,請先跳點到一個座標',
+  tunnel_lost: 'WiFi Tunnel 連線中斷,請重新建立',
+}
+
+function formatError(detail: unknown, fallback: string): string {
+  if (typeof detail === 'string') return detail
+  if (detail && typeof detail === 'object') {
+    const d = detail as { code?: string; message?: string }
+    if (d.code && ERROR_I18N[d.code]) return ERROR_I18N[d.code]
+    if (d.message) return d.message
+  }
+  return fallback
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const opts: RequestInit = {
     method,
@@ -25,7 +47,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const res = await fetchWithRetry(`${API}${path}`, opts)
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || res.statusText)
+    throw new Error(formatError(err.detail, res.statusText))
   }
   return res.json()
 }
@@ -101,3 +123,19 @@ export const planRoute = (start: any, end: any, profile: string) =>
 export const getSavedRoutes = () => request<any[]>('GET', '/api/route/saved')
 export const saveRoute = (route: any) => request<any>('POST', '/api/route/saved', route)
 export const deleteRoute = (id: string) => request<any>('DELETE', `/api/route/saved/${id}`)
+
+// GPX import/export
+export async function importGpx(file: File): Promise<{ status: string; id: string; points: number }> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${API}/api/route/gpx/import`, { method: 'POST', body: form })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(formatError(err.detail, res.statusText))
+  }
+  return res.json()
+}
+
+export function exportGpxUrl(routeId: string): string {
+  return `${API}/api/route/gpx/export/${routeId}`
+}

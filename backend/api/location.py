@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api/location", tags=["location"])
 def _engine():
     from main import app_state
     if app_state.simulation_engine is None:
-        raise HTTPException(status_code=400, detail="No device connected. Connect a device first.")
+        raise HTTPException(status_code=400, detail={"code": "no_device", "message": "尚未連接任何 iOS 裝置,請先透過 USB 連線"})
     return app_state.simulation_engine
 
 

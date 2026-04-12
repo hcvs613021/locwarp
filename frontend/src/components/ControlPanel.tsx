@@ -57,6 +57,8 @@ interface ControlPanelProps {
   savedRoutes: SavedRoute[];
   onRouteLoad: (id: string) => void;
   onRouteSave: (name: string) => void;
+  onRouteGpxImport?: (file: File) => Promise<void>;
+  onRouteGpxExport?: (id: string) => void;
   randomWalkRadius: number;
   onRandomWalkRadiusChange: (radius: number) => void;
   modeExtraSection?: React.ReactNode;
@@ -166,6 +168,8 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
   savedRoutes,
   onRouteLoad,
   onRouteSave,
+  onRouteGpxImport,
+  onRouteGpxExport,
   randomWalkRadius,
   onRandomWalkRadiusChange,
   modeExtraSection,
@@ -624,7 +628,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
                   <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>
                     目前路徑點: {currentWaypointsCount} 個 — 輸入名稱後按儲存即可保存
                   </div>
-                  <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+                  <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
                     <input
                       type="text"
                       className="search-input"
@@ -644,6 +648,34 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
                       }}
                     >儲存</button>
                   </div>
+                  {onRouteGpxImport && (
+                    <div style={{ marginBottom: 10 }}>
+                      <label
+                        className="action-btn"
+                        style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 4,
+                          padding: '4px 10px', fontSize: 11, cursor: 'pointer',
+                        }}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                          <polyline points="17 8 12 3 7 8" />
+                          <line x1="12" y1="3" x2="12" y2="15" />
+                        </svg>
+                        匯入 GPX
+                        <input
+                          type="file"
+                          accept=".gpx,application/gpx+xml"
+                          style={{ display: 'none' }}
+                          onChange={async (e) => {
+                            const f = e.target.files?.[0];
+                            if (f) await onRouteGpxImport(f);
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                    </div>
+                  )}
                   {savedRoutes.length === 0 && (
                     <div style={{ fontSize: 12, opacity: 0.5, padding: '8px 0' }}>尚無儲存的路線</div>
                   )}
@@ -651,16 +683,30 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
                     <div
                       key={route.id}
                       className="bookmark-item"
-                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px', cursor: 'pointer', borderRadius: 4 }}
-                      onClick={() => { onRouteLoad(route.id); setLibraryOpen(false); }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px', borderRadius: 4 }}
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                         <polyline points="22,12 18,12 15,21 9,3 6,12 2,12" />
                       </svg>
-                      <span style={{ fontSize: 13 }}>{route.name}</span>
-                      <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 11 }}>
+                      <span
+                        style={{ fontSize: 13, flex: 1, cursor: 'pointer' }}
+                        onClick={() => { onRouteLoad(route.id); setLibraryOpen(false); }}
+                      >
+                        {route.name}
+                      </span>
+                      <span style={{ opacity: 0.5, fontSize: 11 }}>
                         {route.waypoints.length} pts
                       </span>
+                      {onRouteGpxExport && (
+                        <button
+                          className="action-btn"
+                          title="匯出為 GPX"
+                          onClick={(e) => { e.stopPropagation(); onRouteGpxExport(route.id); }}
+                          style={{ padding: '2px 6px', fontSize: 10 }}
+                        >
+                          GPX
+                        </button>
+                      )}
                     </div>
                   ))}
                 </>

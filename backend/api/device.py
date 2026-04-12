@@ -116,8 +116,23 @@ import logging
 from pathlib import Path
 
 _tunnel_logger = logging.getLogger("wifi_tunnel")
-_tunnel_proc: subprocess.Popen | None = None
-_tunnel_info: dict | None = None
+
+
+class _TunnelManager:
+    """Owns the subprocess + info state for the WiFi tunnel, serialised behind
+    an asyncio.Lock so concurrent /start or /stop requests never race."""
+
+    def __init__(self) -> None:
+        self.proc: subprocess.Popen | None = None
+        self.info: dict | None = None
+        self.lock = asyncio.Lock()
+        self.watchdog_task: asyncio.Task | None = None
+
+    def is_running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+
+_tunnel = _TunnelManager()
 
 
 def _kill_stale_tunnel_processes() -> int:
@@ -158,15 +173,15 @@ def _kill_stale_tunnel_processes() -> int:
         info_path = Path.home() / ".locwarp" / "wifi_tunnel_info.json"
         if info_path.exists():
             info_path.unlink()
-    except Exception:
-        pass
+    except OSError:
+        _tunnel_logger.debug("Could not remove stale tunnel info file", exc_info=True)
     return killed
 
 
 class WifiTunnelStartRequest(BaseModel):
     ip: str
     port: int = 49152
-    udid: str = "00008140-001C096E02EA801C"
+    udid: str | None = None
 
 
 def _get_primary_local_ip() -> str | None:
@@ -179,7 +194,7 @@ def _get_primary_local_ip() -> str | None:
         ip = s.getsockname()[0]
         s.close()
         return ip
-    except Exception:
+    except OSError:
         return None
 
 
@@ -191,10 +206,10 @@ async def _tcp_probe(ip: str, port: int, timeout: float = 0.4) -> bool:
         writer.close()
         try:
             await writer.wait_closed()
-        except Exception:
+        except (OSError, ConnectionError):
             pass
         return True
-    except Exception:
+    except (OSError, ConnectionError, asyncio.TimeoutError):
         return False
 
 
@@ -206,7 +221,7 @@ async def _scan_subnet_for_port(port: int = 49152) -> list[str]:
     try:
         parts = my_ip.split(".")
         prefix = ".".join(parts[:3])
-    except Exception:
+    except (AttributeError, IndexError):
         return []
 
     candidates = [f"{prefix}.{i}" for i in range(1, 255) if f"{prefix}.{i}" != my_ip]
@@ -288,118 +303,17 @@ def _find_python313() -> list[str] | None:
             parts = ver.split()[-1].split(".")
             if int(parts[0]) >= 3 and int(parts[1]) >= 13:
                 return [path, "-3.13"] if name == "py" else [path]
-        except Exception:
+        except (subprocess.SubprocessError, ValueError, IndexError, OSError):
             continue
     return None
 
 
-@router.post("/wifi/tunnel/start")
-async def wifi_tunnel_start(req: WifiTunnelStartRequest):
-    """Start a WiFi tunnel subprocess (requires Python 3.13+ and admin)."""
-    global _tunnel_proc, _tunnel_info
-
-    if _tunnel_proc is not None and _tunnel_proc.poll() is None:
-        if _tunnel_info:
-            return {"status": "already_running", **_tunnel_info}
-        return {"status": "already_running"}
-
-    # Clean up any orphaned tunnel processes from previous runs (crashes,
-    # force-kills, etc.) — a stale TUN interface will prevent the new
-    # tunnel's routes from coming up cleanly.
-    stale_killed = _kill_stale_tunnel_processes()
-    if stale_killed:
-        _tunnel_logger.info("Cleaned up %d stale tunnel process(es)", stale_killed)
-        await asyncio.sleep(1.5)  # give Windows time to tear down the TUN iface
-
-    # Prefer the bundled wifi-tunnel.exe next to us (PyInstaller build).
-    # Fall back to spawning py -3.13 wifi_tunnel.py in dev mode.
-    bundled_tunnel = None
-    if getattr(sys, "frozen", False):
-        # Running from PyInstaller bundle: resources/backend/locwarp-backend.exe
-        # Tunnel sits in resources/wifi-tunnel/wifi-tunnel.exe
-        candidate = Path(sys.executable).resolve().parent.parent / "wifi-tunnel" / "wifi-tunnel.exe"
-        if candidate.exists():
-            bundled_tunnel = candidate
-
-    if bundled_tunnel is not None:
-        cmd_parts = [str(bundled_tunnel), "--ip", req.ip, "--port", str(req.port), "--udid", req.udid]
-    else:
-        py = _find_python313()
-        if py is None:
-            raise HTTPException(
-                status_code=500,
-                detail="Python 3.13+ not found. WiFi tunnel requires Python 3.13+ for TLS-PSK support.",
-            )
-
-        script = Path(__file__).resolve().parent.parent.parent / "wifi_tunnel.py"
-        if not script.exists():
-            raise HTTPException(status_code=500, detail=f"wifi_tunnel.py not found at {script}")
-
-        cmd_parts = py + [str(script), "--ip", req.ip, "--port", str(req.port), "--udid", req.udid]
-    _tunnel_logger.info("Starting WiFi tunnel: %s", " ".join(cmd_parts))
-
-    try:
-        _tunnel_proc = subprocess.Popen(
-            cmd_parts,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to start tunnel process: {e}")
-
-    # Wait up to 20 seconds for the tunnel info file to appear
-    info_path = Path.home() / ".locwarp" / "wifi_tunnel_info.json"
-    for _ in range(40):
-        await asyncio.sleep(0.5)
-        if _tunnel_proc.poll() is not None:
-            output = _tunnel_proc.stdout.read() if _tunnel_proc.stdout else ""
-            _tunnel_proc = None
-            raise HTTPException(
-                status_code=500,
-                detail=f"Tunnel process exited unexpectedly:\n{output[-500:]}",
-            )
-        if info_path.exists():
-            try:
-                data = json.loads(info_path.read_text())
-                _tunnel_info = data
-                _tunnel_logger.info("WiFi tunnel started: %s", data)
-                return {"status": "started", **data}
-            except json.JSONDecodeError:
-                continue
-
-    # Timeout
-    if _tunnel_proc and _tunnel_proc.poll() is None:
-        _tunnel_proc.terminate()
-    _tunnel_proc = None
-    raise HTTPException(status_code=500, detail="Tunnel startup timed out (20s)")
-
-
-@router.get("/wifi/tunnel/status")
-async def wifi_tunnel_status():
-    """Check if the WiFi tunnel subprocess is running."""
-    global _tunnel_proc, _tunnel_info
-
-    if _tunnel_proc is None or _tunnel_proc.poll() is not None:
-        _tunnel_proc = None
-        _tunnel_info = None
-        return {"running": False}
-
-    return {"running": True, **(_tunnel_info or {})}
-
-
-@router.post("/wifi/tunnel/stop")
-async def wifi_tunnel_stop():
-    """Stop the WiFi tunnel subprocess and clean up any network-based
-    device connections that were routed through it."""
-    global _tunnel_proc, _tunnel_info
-
-    # Disconnect any devices connected via the WiFi tunnel BEFORE killing
-    # the tunnel process — once the tunnel is gone the RSD socket is dead
-    # and subsequent calls throw "not connected" / WinError 1231.
+async def _cleanup_wifi_connections() -> list[str]:
+    """Disconnect any Network devices + drop the simulation engine.
+    Returns the UDIDs that were disconnected."""
     from main import app_state
     dm = _dm()
+    udids: list[str] = []
     try:
         udids = [
             udid for udid, conn in list(dm._connections.items())
@@ -408,33 +322,191 @@ async def wifi_tunnel_stop():
         for udid in udids:
             try:
                 await dm.disconnect(udid)
-                _tunnel_logger.info("Disconnected WiFi device %s on tunnel stop", udid)
-            except Exception:
+                _tunnel_logger.info("Disconnected WiFi device %s", udid)
+            except (OSError, RuntimeError):
                 _tunnel_logger.exception("Failed to disconnect %s", udid)
-        # Drop the stale simulation engine so the next /status etc. returns 400
-        # rather than exploding on a closed socket.
         if udids and app_state.simulation_engine is not None:
             app_state.simulation_engine = None
     except Exception:
-        _tunnel_logger.exception("Pre-stop disconnect step failed")
+        _tunnel_logger.exception("WiFi cleanup step failed")
+    return udids
 
-    if _tunnel_proc is None or _tunnel_proc.poll() is not None:
-        _tunnel_proc = None
-        _tunnel_info = None
-        return {"status": "not_running"}
 
-    _tunnel_proc.terminate()
+async def _tunnel_watchdog() -> None:
+    """Poll the tunnel subprocess; if it dies unexpectedly (e.g. WiFi blip,
+    iPhone locked, admin revoked) while we still think it is running, clean
+    up any dependent WiFi connections so the UI can recover gracefully."""
     try:
-        _tunnel_proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        _tunnel_proc.kill()
+        while True:
+            await asyncio.sleep(2.0)
+            proc = _tunnel.proc
+            if proc is None:
+                return
+            if proc.poll() is None:
+                continue  # still alive
+            _tunnel_logger.warning(
+                "Tunnel subprocess exited unexpectedly (code=%s); cleaning up",
+                proc.returncode,
+            )
+            async with _tunnel.lock:
+                # Double-check under lock; /stop may have already handled it
+                if _tunnel.proc is proc:
+                    await _cleanup_wifi_connections()
+                    _tunnel.proc = None
+                    _tunnel.info = None
+                    info_path = Path.home() / ".locwarp" / "wifi_tunnel_info.json"
+                    if info_path.exists():
+                        try:
+                            info_path.unlink()
+                        except OSError:
+                            pass
+                    # Fire a WebSocket event so the frontend can show a banner
+                    try:
+                        from api.websocket import broadcast
+                        await broadcast("tunnel_lost", {"reason": "subprocess_exited"})
+                    except Exception:
+                        _tunnel_logger.exception("Failed to emit tunnel_lost event")
+            return
+    except asyncio.CancelledError:
+        raise
 
-    _tunnel_proc = None
-    _tunnel_info = None
+
+@router.post("/wifi/tunnel/start")
+async def wifi_tunnel_start(req: WifiTunnelStartRequest):
+    """Start a WiFi tunnel subprocess (requires Python 3.13+ and admin)."""
+    async with _tunnel.lock:
+        if _tunnel.is_running():
+            if _tunnel.info:
+                return {"status": "already_running", **_tunnel.info}
+            return {"status": "already_running"}
+
+        stale_killed = _kill_stale_tunnel_processes()
+        if stale_killed:
+            _tunnel_logger.info("Cleaned up %d stale tunnel process(es)", stale_killed)
+            await asyncio.sleep(1.5)
+
+        bundled_tunnel = None
+        if getattr(sys, "frozen", False):
+            candidate = Path(sys.executable).resolve().parent.parent / "wifi-tunnel" / "wifi-tunnel.exe"
+            if candidate.exists():
+                bundled_tunnel = candidate
+
+        resolved_udid = req.udid
+        if not resolved_udid:
+            try:
+                dm = _dm()
+                conns = list(dm._connections.keys())
+                if conns:
+                    resolved_udid = conns[0]
+            except (RuntimeError, AttributeError):
+                pass
+        if not resolved_udid:
+            resolved_udid = "auto"
+
+        if bundled_tunnel is not None:
+            cmd_parts = [str(bundled_tunnel), "--ip", req.ip, "--port", str(req.port), "--udid", resolved_udid]
+        else:
+            py = _find_python313()
+            if py is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail={"code": "python313_missing", "message": "需要 Python 3.13+ 才能啟動 WiFi Tunnel"},
+                )
+            script = Path(__file__).resolve().parent.parent.parent / "wifi_tunnel.py"
+            if not script.exists():
+                raise HTTPException(status_code=500, detail={"code": "tunnel_script_missing", "message": f"找不到 wifi_tunnel.py:{script}"})
+            cmd_parts = py + [str(script), "--ip", req.ip, "--port", str(req.port), "--udid", resolved_udid]
+
+        _tunnel_logger.info("Starting WiFi tunnel: %s", " ".join(cmd_parts))
+
+        try:
+            _tunnel.proc = subprocess.Popen(
+                cmd_parts,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except (OSError, FileNotFoundError) as e:
+            raise HTTPException(status_code=500, detail={"code": "tunnel_spawn_failed", "message": f"無法啟動 tunnel 進程:{e}"})
+
+        info_path = Path.home() / ".locwarp" / "wifi_tunnel_info.json"
+        for _ in range(40):
+            await asyncio.sleep(0.5)
+            if _tunnel.proc.poll() is not None:
+                output = _tunnel.proc.stdout.read() if _tunnel.proc.stdout else ""
+                _tunnel.proc = None
+                raise HTTPException(
+                    status_code=500,
+                    detail={"code": "tunnel_exited", "message": f"Tunnel 進程異常結束:{output[-500:]}"},
+                )
+            if info_path.exists():
+                try:
+                    data = json.loads(info_path.read_text())
+                    _tunnel.info = data
+                    _tunnel_logger.info("WiFi tunnel started: %s", data)
+                    if _tunnel.watchdog_task is None or _tunnel.watchdog_task.done():
+                        _tunnel.watchdog_task = asyncio.create_task(_tunnel_watchdog())
+                    return {"status": "started", **data}
+                except json.JSONDecodeError:
+                    continue
+
+        if _tunnel.is_running():
+            try:
+                _tunnel.proc.terminate()
+            except OSError:
+                pass
+        _tunnel.proc = None
+        raise HTTPException(status_code=500, detail={"code": "tunnel_timeout", "message": "Tunnel 啟動逾時(20 秒)"})
+
+
+@router.get("/wifi/tunnel/status")
+async def wifi_tunnel_status():
+    """Check if the WiFi tunnel subprocess is running."""
+    if not _tunnel.is_running():
+        _tunnel.proc = None
+        _tunnel.info = None
+        return {"running": False}
+    return {"running": True, **(_tunnel.info or {})}
+
+
+@router.post("/wifi/tunnel/stop")
+async def wifi_tunnel_stop():
+    """Stop the WiFi tunnel subprocess and clean up any network-based
+    device connections that were routed through it."""
+    from main import app_state
+    dm = _dm()
+
+    async with _tunnel.lock:
+        await _cleanup_wifi_connections()
+
+        if not _tunnel.is_running():
+            _tunnel.proc = None
+            _tunnel.info = None
+            return {"status": "not_running"}
+
+        # Cancel watchdog first so it doesn't race on our cleanup
+        if _tunnel.watchdog_task and not _tunnel.watchdog_task.done():
+            _tunnel.watchdog_task.cancel()
+
+        try:
+            _tunnel.proc.terminate()
+            try:
+                _tunnel.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _tunnel.proc.kill()
+        except OSError:
+            _tunnel_logger.exception("Failed to terminate tunnel process")
+
+        _tunnel.proc = None
+        _tunnel.info = None
 
     info_path = Path.home() / ".locwarp" / "wifi_tunnel_info.json"
     if info_path.exists():
-        info_path.unlink()
+        try:
+            info_path.unlink()
+        except OSError:
+            pass
 
     # Try to fall back to USB if a device is still plugged in
     try:
