@@ -9,8 +9,12 @@
 </p>
 
 <p align="center">
-  <a href="#使用者端需求">📖 使用者端說明</a> ·
-  <a href="https://github.com/keezxc1223/locwarp/releases">⬇ 下載安裝檔</a>
+  <a href="#使用者端需求">
+    <img alt="使用者端說明" src="https://img.shields.io/badge/使用者端說明-2d3748?style=for-the-badge&logo=readthedocs&logoColor=white">
+  </a>
+  <a href="https://github.com/keezxc1223/locwarp/releases">
+    <img alt="下載安裝檔" src="https://img.shields.io/badge/下載安裝檔-4285f4?style=for-the-badge&logo=github&logoColor=white">
+  </a>
 </p>
 
 ---
