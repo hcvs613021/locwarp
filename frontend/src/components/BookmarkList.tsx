@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 interface Bookmark {
   id?: string;
@@ -64,6 +64,28 @@ const BookmarkList: React.FC<BookmarkListProps> = ({
   const [contextMenu, setContextMenu] = useState<{ bm: Bookmark; x: number; y: number } | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
+
+  // Close the context menu on any document click outside of it.
+  // Using a document-level listener (instead of a full-screen overlay div)
+  // avoids the bug where a stuck overlay blocks all user interaction.
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Element | null;
+      if (target && target.closest?.('[data-bookmark-context-menu]')) return;
+      setContextMenu(null);
+    };
+    // defer to next tick so the opening right-click doesn't close it instantly
+    const id = setTimeout(() => {
+      document.addEventListener('click', handler);
+      document.addEventListener('contextmenu', handler);
+    }, 0);
+    return () => {
+      clearTimeout(id);
+      document.removeEventListener('click', handler);
+      document.removeEventListener('contextmenu', handler);
+    };
+  }, [contextMenu]);
 
   const toggleCategory = (cat: string) => {
     setCollapsed((prev) => ({ ...prev, [cat]: !prev[cat] }));
@@ -397,14 +419,11 @@ const BookmarkList: React.FC<BookmarkListProps> = ({
         </div>
       )}
 
-      {/* Context menu */}
+      {/* Context menu (dismissed via document click listener — see useEffect) */}
       {contextMenu && (
         <>
           <div
-            style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9998 }}
-            onClick={() => setContextMenu(null)}
-          />
-          <div
+            data-bookmark-context-menu
             style={{
               position: 'fixed',
               left: contextMenu.x,
