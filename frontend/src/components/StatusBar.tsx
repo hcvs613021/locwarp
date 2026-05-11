@@ -155,6 +155,92 @@ const StatusBar: React.FC<StatusBarProps> = ({
   const [locatePcResult, setLocatePcResult] = useState<{ lat: number; lng: number; accuracy: number; via: string } | null>(null);
   const [locatePcError, setLocatePcError] = useState<string | null>(null);
 
+  // macOS admin pill: visible only when running inside Electron on
+  // macOS and the backend has not yet been re-launched as root.
+  // pymobiledevice3 needs root to create the iOS 17+ utun tunnel.
+  // Two paths:
+  //   * One-shot — osascript do-shell-script-with-admin, lasts only
+  //     for this app session.
+  //   * Permanent — install a launchd LaunchDaemon so root backend
+  //     auto-starts at boot. One password prompt, never asked again.
+  const [adminBackendIsRoot, setAdminBackendIsRoot] = useState(false);
+  const [launchDaemonInstalled, setLaunchDaemonInstalled] = useState(false);
+  const [adminRestartBusy, setAdminRestartBusy] = useState(false);
+  const [adminRestartError, setAdminRestartError] = useState<string | null>(null);
+  const [daemonInstallBusy, setDaemonInstallBusy] = useState(false);
+  const electronAPI = (typeof window !== 'undefined') ? window.electronAPI : undefined;
+  const isMacElectron = electronAPI?.platform === 'darwin' && !!electronAPI?.requestAdminRestart;
+  useEffect(() => {
+    if (!isMacElectron) return;
+    let cancelled = false;
+    Promise.all([
+      electronAPI?.isBackendRoot?.().catch(() => null),
+      electronAPI?.launchDaemonStatus?.().catch(() => null),
+    ]).then(([rootInfo, daemonInfo]) => {
+      if (cancelled) return;
+      setAdminBackendIsRoot(!!rootInfo?.isRoot);
+      setLaunchDaemonInstalled(!!daemonInfo?.installed);
+    });
+    return () => { cancelled = true; };
+  }, [isMacElectron]);
+
+  const handleRequestAdminRestart = async () => {
+    if (!electronAPI?.requestAdminRestart) return;
+    setAdminRestartBusy(true);
+    setAdminRestartError(null);
+    try {
+      const r = await electronAPI.requestAdminRestart();
+      if (r.ok) {
+        setAdminBackendIsRoot(true);
+      } else if (r.code !== 'CANCELLED') {
+        setAdminRestartError(r.message || 'admin restart failed');
+      }
+    } catch (e: any) {
+      setAdminRestartError(e?.message || 'IPC error');
+    } finally {
+      setAdminRestartBusy(false);
+    }
+  };
+
+  const handleInstallDaemon = async () => {
+    if (!electronAPI?.launchDaemonInstall) return;
+    setDaemonInstallBusy(true);
+    setAdminRestartError(null);
+    try {
+      const r = await electronAPI.launchDaemonInstall();
+      if (r.ok) {
+        setAdminBackendIsRoot(true);
+        setLaunchDaemonInstalled(true);
+      } else if (r.code !== 'CANCELLED') {
+        setAdminRestartError(r.message || 'install failed');
+      }
+    } catch (e: any) {
+      setAdminRestartError(e?.message || 'IPC error');
+    } finally {
+      setDaemonInstallBusy(false);
+    }
+  };
+
+  const handleUninstallDaemon = async () => {
+    if (!electronAPI?.launchDaemonUninstall) return;
+    if (!confirm('停用「開機自動啟動」?\n\nLocWarp backend 將不再以 root 自動啟動,iOS 17+ 模擬定位需要每次重新點「一次性授權」。')) return;
+    setDaemonInstallBusy(true);
+    setAdminRestartError(null);
+    try {
+      const r = await electronAPI.launchDaemonUninstall();
+      if (r.ok) {
+        setAdminBackendIsRoot(false);
+        setLaunchDaemonInstalled(false);
+      } else if (r.code !== 'CANCELLED') {
+        setAdminRestartError(r.message || 'uninstall failed');
+      }
+    } catch (e: any) {
+      setAdminRestartError(e?.message || 'IPC error');
+    } finally {
+      setDaemonInstallBusy(false);
+    }
+  };
+
   const handleLocatePcClick = async () => {
     setLocatePcOpen(true);
     setLocatePcResult(null);
@@ -162,32 +248,66 @@ const StatusBar: React.FC<StatusBarProps> = ({
     setLocatePcBusy(true);
 
     const api = (typeof window !== 'undefined') ? window.electronAPI : undefined;
-    if (!api?.locatePc) {
-      setLocatePcError('electronAPI.locatePc unavailable (preload missing)');
+
+    // Electron path: main-process IPC handler (Windows Location API
+    // → IP fallback on Windows; IP fallback only on macOS/Linux).
+    if (api?.locatePc) {
+      try {
+        const r = await api.locatePc();
+        setLocatePcBusy(false);
+        if (r.ok && r.lat != null && r.lng != null) {
+          setLocatePcResult({
+            lat: r.lat,
+            lng: r.lng,
+            accuracy: r.accuracy ?? 100,
+            via: r.via ?? 'unknown',
+          });
+          return;
+        }
+        if (r.code === 'DENIED') {
+          setLocatePcError(t('status.locate_pc_denied'));
+          return;
+        }
+        setLocatePcError(`${r.code ?? 'ERROR'}${r.message ? ': ' + r.message : ''}`);
+      } catch (e: any) {
+        setLocatePcBusy(false);
+        setLocatePcError(`IPC error: ${e?.message || e}`);
+      }
+      return;
+    }
+
+    // Browser/dev path: no Electron preload — fall back to the W3C
+    // Geolocation API. On macOS Chrome/Safari this taps CoreLocation
+    // (Wi-Fi positioning + GPS), comparable in accuracy to the Electron
+    // PowerShell path. Requires a secure context, which localhost is.
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setLocatePcError('Geolocation unavailable in this browser');
       setLocatePcBusy(false);
       return;
     }
-    try {
-      const r = await api.locatePc();
-      setLocatePcBusy(false);
-      if (r.ok && r.lat != null && r.lng != null) {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocatePcBusy(false);
         setLocatePcResult({
-          lat: r.lat,
-          lng: r.lng,
-          accuracy: r.accuracy ?? 100,
-          via: r.via ?? 'unknown',
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy ?? 100,
+          via: 'browser',
         });
-        return;
-      }
-      if (r.code === 'DENIED') {
-        setLocatePcError(t('status.locate_pc_denied'));
-        return;
-      }
-      setLocatePcError(`${r.code ?? 'ERROR'}${r.message ? ': ' + r.message : ''}`);
-    } catch (e: any) {
-      setLocatePcBusy(false);
-      setLocatePcError(`IPC error: ${e?.message || e}`);
-    }
+      },
+      (err) => {
+        setLocatePcBusy(false);
+        if (err.code === err.PERMISSION_DENIED) {
+          setLocatePcError(t('status.locate_pc_denied'));
+          return;
+        }
+        const code = err.code === err.POSITION_UNAVAILABLE ? 'NODATA'
+                   : err.code === err.TIMEOUT ? 'TIMEOUT'
+                   : 'ERROR';
+        setLocatePcError(`${code}${err.message ? ': ' + err.message : ''}`);
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+    );
   };
 
   const handleInitialDialogSave = async () => {
@@ -272,6 +392,89 @@ const StatusBar: React.FC<StatusBarProps> = ({
           removed from the bottom bar — the left-side DeviceStatus panel
           already shows all of this, so repeating it here only ate
           horizontal space. */}
+
+      {/* macOS-only: pymobiledevice3 needs root for iOS 17+ utun tunnel.
+          Three states:
+            (1) Daemon installed → green "已啟用自動啟動" badge + uninstall.
+            (2) Backend running as root (one-shot) → no chips, all good.
+            (3) Default → offer permanent + one-shot buttons. */}
+      {isMacElectron && launchDaemonInstalled && (
+        <span
+          onClick={handleUninstallDaemon}
+          title="點擊停用「開機自動啟動」(會移除 LaunchDaemon,需要再輸入一次密碼)"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '3px 10px', borderRadius: 999,
+            background: 'rgba(76, 175, 80, 0.18)',
+            border: '1px solid rgba(76, 175, 80, 0.4)',
+            color: '#a5d6a7', fontSize: 11, cursor: 'pointer',
+            opacity: daemonInstallBusy ? 0.5 : 1,
+          }}
+        >
+          <span style={{ fontSize: 13 }}>{daemonInstallBusy ? '⏳' : '✓'}</span>
+          <span>已啟用自動啟動 (root)</span>
+        </span>
+      )}
+      {isMacElectron && !launchDaemonInstalled && !adminBackendIsRoot && (
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={handleInstallDaemon}
+            disabled={daemonInstallBusy || adminRestartBusy}
+            title="一次安裝、永久啟用:把 backend 註冊成系統服務,以後 LocWarp 開啟時不必再點任何按鈕"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              padding: '3px 10px', borderRadius: 999,
+              background: 'rgba(108, 140, 255, 0.22)',
+              border: '1px solid rgba(108, 140, 255, 0.5)',
+              color: '#bcd0ff', fontSize: 11,
+              cursor: daemonInstallBusy ? 'wait' : 'pointer',
+              opacity: daemonInstallBusy ? 0.6 : 1,
+              fontWeight: 500,
+            }}
+          >
+            <span style={{ fontSize: 13 }}>{daemonInstallBusy ? '⏳' : '⚙️'}</span>
+            <span>{daemonInstallBusy ? '安裝中…' : '設為自動啟動 (永久)'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleRequestAdminRestart}
+            disabled={daemonInstallBusy || adminRestartBusy}
+            title="一次性授權,只在這次 LocWarp 開著時有效。下次開啟需要再點一次。"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              padding: '3px 8px', borderRadius: 999,
+              background: 'rgba(255, 167, 38, 0.14)',
+              border: '1px solid rgba(255, 167, 38, 0.3)',
+              color: '#ffcc80', fontSize: 10,
+              cursor: adminRestartBusy ? 'wait' : 'pointer',
+              opacity: adminRestartBusy ? 0.6 : 1,
+            }}
+          >
+            <span style={{ fontSize: 11 }}>{adminRestartBusy ? '⏳' : '🔒'}</span>
+            <span>{adminRestartBusy ? '授權中…' : '本次授權'}</span>
+          </button>
+          {adminRestartError && (
+            <span
+              onClick={() => {
+                navigator.clipboard?.writeText(adminRestartError).catch(() => {});
+              }}
+              title="點擊複製錯誤訊息"
+              style={{
+                display: 'inline-block', maxWidth: 480,
+                padding: '2px 8px', borderRadius: 6,
+                background: 'rgba(244, 67, 54, 0.14)',
+                border: '1px solid rgba(244, 67, 54, 0.32)',
+                color: '#ffb4ab', fontSize: 10, fontFamily: 'monospace',
+                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                cursor: 'copy',
+              }}
+            >
+              {adminRestartError}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Weather chip. Shows current conditions at the virtual location
           with an animated icon. Renders in both single and dual mode

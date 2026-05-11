@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Electron / V8 JIT compilation -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!-- V8 also writes to memory pages it later executes -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- PyInstaller bootloader respects DYLD_LIBRARY_PATH and similar -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+
+    <!-- pyexpat.so loads our bundled libexpat.1.dylib (re-signed by us, -->
+    <!-- not by Apple). Hardened runtime's library validation would     -->
+    <!-- otherwise refuse it. Same applies to other PyInstaller-bundled -->
+    <!-- .so files that aren't signed by our Team ID at build time.     -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

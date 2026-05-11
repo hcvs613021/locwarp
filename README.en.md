@@ -1,6 +1,9 @@
 # LocWarp
 
-**iOS Virtual Location Simulator**, a Windows-based tool that controls an iPhone's GPS location. Supports Teleport, Navigate, Route Loop, Multi-Stop, Random Walk, and Joystick modes over USB or Wi-Fi.
+> **🍎 macOS Support Fork**
+> This is a fork of [github.com/keezxc1223/locwarp](https://github.com/keezxc1223/locwarp), maintained to add macOS support to the upstream project.
+
+**iOS Virtual Location Simulator**, a Windows-based&Mac-based tool that controls an iPhone's GPS location. Supports Teleport, Navigate, Route Loop, Multi-Stop, Random Walk, and Joystick modes over USB or Wi-Fi.
 
 <p align="right">
   <a href="README.md"><img alt="繁體中文" src="https://img.shields.io/badge/繁體中文-gray?style=flat-square"></a>
