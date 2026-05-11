@@ -38,6 +38,10 @@ Thumbs.db
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 
+# ── Apple notarization credentials (machine-local) ──
+.notarize.env
+*.p8
+
 # ── Source images kept in repo root during dev ──────
 # (icon.png / icon.ico are kept in frontend/build/ — committed)
 S__*.png

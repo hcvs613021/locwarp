@@ -327,8 +327,23 @@ async def _usbmux_presence_watchdog():
     reconnect_cooldown_base = 5.0  # seconds for first retry
     reconnect_cooldown_max = 300.0  # cap at 5 minutes per UDID
 
+    # Adaptive polling: 1 Hz when a UI client is connected (responsive
+    # plug/unplug detection), 30 s when nobody's watching. Reduces idle
+    # CPU usage of the always-running LaunchDaemon by ~30x so it doesn't
+    # heat the machine when LocWarp.app is closed.
+    from api.websocket import _connections as _ws_clients, watchdog_wake_event
+    _wake = watchdog_wake_event()
     while True:
-        await asyncio.sleep(1.0)
+        if _ws_clients:
+            await asyncio.sleep(1.0)
+        else:
+            try:
+                # Long sleep, but break early when a UI client connects
+                # (websocket_endpoint sets the wake event on accept).
+                await asyncio.wait_for(_wake.wait(), timeout=30.0)
+            except asyncio.TimeoutError:
+                pass
+            _wake.clear()
         try:
             dm = app_state.device_manager
             # Build two views: the ORIGINAL-case serials (needed for

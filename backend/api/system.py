@@ -1,12 +1,14 @@
 """System utility endpoints — open files / folders for the user."""
 
+import asyncio
 import logging
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -60,6 +62,32 @@ async def open_log():
         raise HTTPException(status_code=500, detail={"code": "open_log_failed",
                                                      "message": f"無法開啟 log:{exc}"})
     return {"status": "opened", "path": str(target)}
+
+
+@router.post("/shutdown")
+async def shutdown(request: Request):
+    """Graceful self-shutdown — used by the Electron app on quit and by
+    the admin-restart flow to swap a user-mode backend for a root one.
+
+    Localhost-only so a phone (or anyone on the LAN) can't kill the
+    backend over the network. Schedules SIGTERM after returning the HTTP
+    response so the caller sees a clean 200.
+    """
+    host = (request.client.host if request.client else "") or ""
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(status_code=403, detail="Localhost only")
+
+    async def _kill_soon():
+        # Give uvicorn a tick to flush the response before signalling.
+        await asyncio.sleep(0.2)
+        try:
+            os.kill(os.getpid(), signal.SIGTERM)
+        except Exception:
+            logger.exception("self-shutdown SIGTERM failed; falling back to os._exit")
+            os._exit(0)
+
+    asyncio.create_task(_kill_soon())
+    return {"status": "shutting_down", "pid": os.getpid()}
 
 
 @router.post("/open-log-folder")

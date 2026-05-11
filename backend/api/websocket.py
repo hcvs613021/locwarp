@@ -12,6 +12,21 @@ logger = logging.getLogger(__name__)
 # Active WebSocket connections
 _connections: list[WebSocket] = []
 
+# Wake-up signal used by main.py's usbmux watchdog. When no UI client
+# is connected, the watchdog backs off to a 30 s poll (saves significant
+# CPU/power when LocWarp runs as a LaunchDaemon in the background).
+# Setting this Event tells the watchdog to break its long sleep early
+# so newly-connected UI clients see device state within a tick or two.
+_watchdog_wake: "asyncio.Event | None" = None
+
+
+def watchdog_wake_event() -> "asyncio.Event":
+    """Lazy-init the Event (must be created on the event loop thread)."""
+    global _watchdog_wake
+    if _watchdog_wake is None:
+        _watchdog_wake = asyncio.Event()
+    return _watchdog_wake
+
 
 async def broadcast(event_type: str, data: dict):
     """Broadcast event to all connected WebSocket clients."""
@@ -31,6 +46,12 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     _connections.append(ws)
     logger.info("WebSocket client connected (%d total)", len(_connections))
+    # Kick the usbmux watchdog out of its idle long-sleep so the freshly
+    # connected UI sees current device state within a tick.
+    try:
+        watchdog_wake_event().set()
+    except Exception:
+        logger.debug("watchdog wake-on-connect failed", exc_info=True)
 
     try:
         while True:

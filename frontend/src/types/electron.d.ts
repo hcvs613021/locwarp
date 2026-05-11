@@ -16,6 +16,24 @@ export interface RenderModeInfo {
   isWin10: boolean
 }
 
+export interface AdminRestartResult {
+  ok: boolean
+  pid?: number
+  code?: 'CANCELLED'
+  message?: string
+}
+
+export interface LaunchDaemonStatus {
+  installed: boolean
+  error?: string
+}
+
+export interface LaunchDaemonResult {
+  ok: boolean
+  code?: 'CANCELLED'
+  message?: string
+}
+
 declare global {
   interface Window {
     electronAPI?: {
@@ -23,6 +41,12 @@ declare global {
       getRenderMode(): Promise<RenderModeInfo>
       setRenderMode(mode: RenderMode): Promise<{ ok: boolean }>
       relaunchApp(): Promise<void>
+      isBackendRoot(): Promise<{ isRoot: boolean; pid: number | null }>
+      requestAdminRestart(): Promise<AdminRestartResult>
+      launchDaemonStatus(): Promise<LaunchDaemonStatus>
+      launchDaemonInstall(): Promise<LaunchDaemonResult>
+      launchDaemonUninstall(): Promise<LaunchDaemonResult>
+      platform: NodeJS.Platform
     }
   }
 }

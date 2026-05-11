@@ -1,5 +1,8 @@
 # LocWarp
 
+> **🍎 macOS 支援版本說明**
+> 本專案 fork 自 [github.com/keezxc1223/locwarp](https://github.com/keezxc1223/locwarp),為支援 macOS 而製作本版本。
+
 **iOS 虛擬定位模擬器**, 在 Windows 上控制 iPhone 的 GPS 定位,支援直接跳點、導航、路線循環、多點停留、隨機漫步、搖桿操作等模擬模式,可經由 USB 或 WiFi 連線。
 
 <p align="right">
