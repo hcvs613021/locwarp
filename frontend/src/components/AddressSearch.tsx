@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { searchAddress } from '../services/api';
+import { searchAddress, setGeocodeProviderPref } from '../services/api';
 import { useT } from '../i18n';
 
 interface SearchResult {
@@ -14,7 +14,7 @@ interface AddressSearchProps {
   onSelect: (lat: number, lng: number, name: string) => void;
 }
 
-type Provider = 'nominatim' | 'google';
+type Provider = 'nominatim' | 'photon' | 'google';
 
 const AddressSearch: React.FC<AddressSearchProps> = ({ onSelect }) => {
   const t = useT();
@@ -34,6 +34,7 @@ const AddressSearch: React.FC<AddressSearchProps> = ({ onSelect }) => {
       const saved = localStorage.getItem('locwarp.geocode_provider');
       const key = localStorage.getItem('locwarp.google_geocode_key') || '';
       if (saved === 'google' && key) return 'google';
+      if (saved === 'photon') return 'photon';
     } catch { /* ignore */ }
     return 'nominatim';
   });
@@ -44,11 +45,21 @@ const AddressSearch: React.FC<AddressSearchProps> = ({ onSelect }) => {
   const [showSettings, setShowSettings] = useState(false);
   const [keyInput, setKeyInput] = useState<string>(googleKey);
 
+  // Mirror to backend so /api/phone/geocode can honour the same choice.
+  // Fire-and-forget: the desktop's localStorage is still the source of
+  // truth for its own search calls, this only matters for the phone.
+  const syncToBackend = useCallback((p: Provider, key: string) => {
+    setGeocodeProviderPref(p, p === 'google' ? key : '').catch(() => {
+      /* backend offline / older build — desktop search keeps working */
+    });
+  }, []);
+
   const persistProvider = useCallback((p: Provider) => {
     setProvider(p);
     try { localStorage.setItem('locwarp.geocode_provider', p); }
     catch { /* ignore */ }
-  }, []);
+    syncToBackend(p, googleKey);
+  }, [googleKey, syncToBackend]);
 
   const saveGoogleKey = useCallback(() => {
     const trimmed = keyInput.trim();
@@ -56,9 +67,12 @@ const AddressSearch: React.FC<AddressSearchProps> = ({ onSelect }) => {
     setGoogleKey(trimmed);
     try { localStorage.setItem('locwarp.google_geocode_key', trimmed); }
     catch { /* ignore */ }
-    persistProvider('google');
+    setProvider('google');
+    try { localStorage.setItem('locwarp.geocode_provider', 'google'); }
+    catch { /* ignore */ }
+    syncToBackend('google', trimmed);
     setShowSettings(false);
-  }, [keyInput, persistProvider]);
+  }, [keyInput, syncToBackend]);
 
   const clearGoogleKey = useCallback(() => {
     setGoogleKey('');
@@ -67,6 +81,14 @@ const AddressSearch: React.FC<AddressSearchProps> = ({ onSelect }) => {
     catch { /* ignore */ }
     persistProvider('nominatim');
   }, [persistProvider]);
+
+  // On mount, push the currently-saved choice to the backend in case the
+  // user previously picked Google/Photon before this sync existed (or the
+  // backend's settings.json got reset).
+  useEffect(() => {
+    syncToBackend(provider, googleKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const doSearch = useCallback(async (q: string) => {
     if (q.trim().length < 2) {
@@ -132,6 +154,20 @@ const AddressSearch: React.FC<AddressSearchProps> = ({ onSelect }) => {
   }, []);
 
   const isGoogleActive = provider === 'google' && !!googleKey;
+  const isPhotonActive = provider === 'photon';
+  // Pill style + label for the three active providers. Free-tier ones
+  // (Nominatim, Photon) share a muted look; Google uses its brand blue
+  // to make the "paid key in use" state visible at a glance.
+  const pillLabel = isGoogleActive
+    ? 'Google'
+    : isPhotonActive
+      ? 'Photon'
+      : 'Nominatim';
+  const pillTitleKey = isGoogleActive
+    ? 'search.settings_btn_google'
+    : isPhotonActive
+      ? 'search.settings_btn_photon'
+      : 'search.settings_btn_free';
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
@@ -160,7 +196,7 @@ const AddressSearch: React.FC<AddressSearchProps> = ({ onSelect }) => {
         </div>
         <button
           onClick={() => { setKeyInput(googleKey); setShowSettings(true); }}
-          title={t(isGoogleActive ? 'search.settings_btn_google' : 'search.settings_btn_free')}
+          title={t(pillTitleKey)}
           style={{
             display: 'flex', alignItems: 'center', gap: 4,
             padding: '0 10px',
@@ -182,7 +218,7 @@ const AddressSearch: React.FC<AddressSearchProps> = ({ onSelect }) => {
               boxShadow: isGoogleActive ? '0 0 6px rgba(66, 133, 244, 0.8)' : 'none',
             }}
           />
-          {isGoogleActive ? 'Google' : t('search.provider_free_short')}
+          {pillLabel}
         </button>
       </div>
 
@@ -273,6 +309,39 @@ const AddressSearch: React.FC<AddressSearchProps> = ({ onSelect }) => {
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.72, marginTop: 4, lineHeight: 1.55 }}>
                   {t('search.provider_free_desc')}
+                </div>
+              </div>
+            </label>
+
+            {/* Photon option — second free / no-key choice. Same shape as
+                Nominatim row above, just a different OSM mirror so users
+                can A/B which one happens to know their address better. */}
+            <label
+              style={{
+                display: 'flex', alignItems: 'flex-start', gap: 10,
+                padding: '12px 14px',
+                borderRadius: 8,
+                cursor: 'pointer',
+                background: provider === 'photon' ? 'rgba(108, 140, 255, 0.10)' : 'rgba(255, 255, 255, 0.02)',
+                border: `1px solid ${provider === 'photon' ? 'rgba(108, 140, 255, 0.32)' : 'rgba(255, 255, 255, 0.06)'}`,
+                marginBottom: 10,
+                transition: 'all 0.16s',
+              }}
+              onClick={() => persistProvider('photon')}
+            >
+              <input
+                type="radio"
+                name="geocode-provider-modal"
+                checked={provider === 'photon'}
+                onChange={() => persistProvider('photon')}
+                style={{ marginTop: 3, accentColor: '#6c8cff' }}
+              />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, fontSize: 13.5 }}>
+                  {t('search.provider_photon_label')}
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.72, marginTop: 4, lineHeight: 1.55 }}>
+                  {t('search.provider_photon_desc')}
                 </div>
               </div>
             </label>

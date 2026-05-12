@@ -221,11 +221,18 @@ export const searchAddress = (q: string) => {
   if (provider === 'google') {
     params.set('provider', 'google')
     params.set('google_key', googleKey)
+  } else if (provider === 'photon') {
+    params.set('provider', 'photon')
   }
   return request<any[]>('GET', `/api/geocode/search?${params.toString()}`)
 }
 export const reverseGeocode = (lat: number, lng: number) =>
   request<any>('GET', `/api/geocode/reverse?lat=${lat}&lng=${lng}`)
+
+// Mirror the desktop's geocode provider choice to the backend so the phone
+// page (which can't read renderer localStorage) honours the same provider.
+export const setGeocodeProviderPref = (provider: string, googleKey: string = '') =>
+  request<any>('PUT', '/api/geocode/provider-pref', { provider, google_key: googleKey })
 export const lookupTimezone = (lat: number, lng: number) =>
   request<{ zone: string; gmt_offset_seconds: number; abbreviation: string; timestamp: number } | null>(
     'GET', `/api/geocode/timezone?lat=${lat}&lng=${lng}`,
