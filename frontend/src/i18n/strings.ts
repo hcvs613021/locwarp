@@ -274,6 +274,11 @@ export const STRINGS = {
   'wifi.port_scan_failed': { zh: '掃描 port 失敗', en: 'Port scan failed' },
   'wifi.ip_required_for_scan': { zh: '請先手動填入 IP', en: 'Please enter the iPhone IP first' },
   'wifi.tunnel_stop': { zh: 'Stop Tunnel', en: 'Stop Tunnel' },
+  'wifi.recent_ips_button': { zh: '最近 {n}', en: 'Recent {n}' },
+  'wifi.recent_ips_tooltip': {
+    zh: '從最近連線過的 IP 直接挑一個帶回欄位,免重打',
+    en: 'Pick a recently used IP — fills the field without retyping',
+  },
   'dev_mode.reveal_button': { zh: '顯示開發者模式選項', en: 'Reveal Developer Mode option' },
   'dev_mode.reveal_working': { zh: '處理中...', en: 'Working...' },
   'dev_mode.reveal_tooltip': {
@@ -536,6 +541,9 @@ export const STRINGS = {
   'toast.route_optimize_estimate': { zh: '直線估算', en: 'straight-line estimate' },
   'panel.waypoints_optimize': { zh: '最佳順序', en: 'Optimize' },
   'panel.waypoints_optimize_tooltip': { zh: '用 OSRM Table 重新排序路徑點,最小化總移動時間', en: 'Reorder waypoints with OSRM Table to minimize total travel time' },
+  'panel.waypoints_copy_all': { zh: '複製座標', en: 'Copy coords' },
+  'panel.waypoints_copy_all_tooltip': { zh: '依目前順序複製所有路徑點座標,一行一個 lat, lng', en: 'Copy every waypoint in current order, one lat, lng per line' },
+  'toast.waypoints_copied': { zh: '已複製 {n} 個座標', en: 'Copied {n} coordinates' },
   'toast.no_waypoints': { zh: '尚未設定路徑點,請在地圖上右鍵添加或使用隨機產生', en: 'No waypoints set, right-click the map to add, or use Random generate' },
   'toast.pause_countdown': { zh: '到點暫停中 · 剩餘 {n}s', en: 'Paused at waypoint · {n}s left' },
 
