@@ -342,6 +342,9 @@ class SimulationEngine:
         seed: int | None = None,
         straight_line: bool = False,
         route_engine: str | None = None,
+        center_mode: str = "fixed",
+        forward_enabled: bool = False,
+        forward_turn_deg: float = 35.0,
     ) -> None:
         """Begin a random walk within a radius."""
         await self._ensure_stopped()
@@ -357,6 +360,8 @@ class SimulationEngine:
             speed_kmh=speed_kmh, speed_min_kmh=speed_min_kmh, speed_max_kmh=speed_max_kmh,
             pause_enabled=pause_enabled, pause_min=pause_min, pause_max=pause_max,
             seed=effective_seed, straight_line=straight_line, route_engine=route_engine,
+            center_mode=center_mode, forward_enabled=forward_enabled,
+            forward_turn_deg=forward_turn_deg,
         )
         seed = effective_seed
         await self._run_handler(
@@ -367,6 +372,8 @@ class SimulationEngine:
                 pause_enabled=pause_enabled, pause_min=pause_min, pause_max=pause_max,
                 seed=seed,
                 straight_line=straight_line, route_engine=route_engine,
+                center_mode=center_mode, forward_enabled=forward_enabled,
+                forward_turn_deg=forward_turn_deg,
             ),
             "Random walk",
         )
@@ -905,8 +912,11 @@ class SimulationEngine:
                 self.eta_tracker.update(accumulated_distance)
                 self.segment_index = min(idx, self.total_segments)
 
-                combined_remaining = self.distance_remaining + self._route_offset_remaining
-                combined_eta = combined_remaining / max(speed_mps, 0.001)
+                leg_remaining = self.distance_remaining
+                combined_remaining = leg_remaining + self._route_offset_remaining
+                inv_speed = 1.0 / max(speed_mps, 0.001)
+                leg_eta = leg_remaining * inv_speed
+                combined_eta = combined_remaining * inv_speed
                 await self._emit("position_update", {
                     "lat": jittered_lat,
                     "lng": jittered_lng,
@@ -916,6 +926,12 @@ class SimulationEngine:
                     "distance_remaining": combined_remaining,
                     "distance_traveled": self.distance_traveled,
                     "eta_seconds": combined_eta,
+                    # Per-leg countdown so the EtaBar can show both "next stop"
+                    # and "whole lap/trip" simultaneously during multi_stop /
+                    # route_loop. Equal to the combined values when no offset
+                    # is active (navigate / random_walk).
+                    "leg_distance_remaining": leg_remaining,
+                    "leg_eta_seconds": leg_eta,
                 })
 
                 prev_lat, prev_lng = lat, lng
