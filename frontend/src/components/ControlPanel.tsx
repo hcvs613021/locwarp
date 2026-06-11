@@ -132,19 +132,24 @@ interface ControlPanelProps {
   goldDittoBusy?: boolean;
   modeExtraSection?: React.ReactNode;
   currentWaypointsCount?: number;
+  loadedRouteName?: string | null;
   straightLine?: boolean;
   onStraightLineChange?: (v: boolean) => void;
+  keepWaypoints?: boolean;
+  onKeepWaypointsChange?: (v: boolean) => void;
   routeEngine?: 'osrm' | 'osrm_fossgis' | 'valhalla' | 'brouter';
   onRouteEngineChange?: (v: 'osrm' | 'osrm_fossgis' | 'valhalla' | 'brouter') => void;
   clickToAddWaypoint?: boolean;
   onClickToAddWaypointChange?: (v: boolean) => void;
   // Jump mode: when toggled on for Loop / MultiStop, the device teleports
-  // point-to-point with a fixed dwell interval instead of walking the
-  // routed path. Used for fruit-farm sniping.
+  // point-to-point with configurable pre / post delays around each
+  // teleport, instead of walking the routed path.
   jumpMode?: boolean;
   onJumpModeChange?: (v: boolean) => void;
-  jumpInterval?: number;
-  onJumpIntervalChange?: (v: number) => void;
+  jumpPreDelay?: number;
+  onJumpPreDelayChange?: (v: number) => void;
+  jumpPostDelay?: number;
+  onJumpPostDelayChange?: (v: number) => void;
   // Incremented by any external source (e.g. map top-left library
   // button) to request the library panel be opened. useEffect on the
   // value toggles libraryOpen=true so the parent doesn't have to own
@@ -312,16 +317,21 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
   goldDittoBusy = false,
   modeExtraSection,
   currentWaypointsCount = 0,
+  loadedRouteName = null,
   straightLine = false,
   onStraightLineChange,
+  keepWaypoints = false,
+  onKeepWaypointsChange,
   routeEngine = 'osrm',
   onRouteEngineChange,
   clickToAddWaypoint = false,
   onClickToAddWaypointChange,
   jumpMode = false,
   onJumpModeChange,
-  jumpInterval = 12,
-  onJumpIntervalChange,
+  jumpPreDelay = 2,
+  onJumpPreDelayChange,
+  jumpPostDelay = 4,
+  onJumpPostDelayChange,
   openLibraryToken,
   openLibraryTab,
 }) => {
@@ -383,6 +393,27 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
     window.addEventListener('mouseup', onUp);
   };
 
+  // Keep the floating library window inside the viewport. Its position is
+  // remembered across opens, so without this a window that was dragged to
+  // the right edge (or opened on a wide window) ends up partly or fully
+  // off-screen and unreachable after the window is shrunk (issue #34).
+  // Re-clamp on open and on every resize.
+  useEffect(() => {
+    if (!libraryOpen) return;
+    const clamp = () => {
+      // Mirror the CSS clamp(280px, 34vw, 440px) so the reposition math
+      // matches the rendered width.
+      const w = Math.max(280, Math.min(window.innerWidth * 0.34, 440));
+      setLibraryPos((p) => ({
+        x: Math.min(Math.max(8, p.x), Math.max(8, window.innerWidth - w - 8)),
+        y: Math.min(Math.max(8, p.y), Math.max(8, window.innerHeight - 80)),
+      }));
+    };
+    clamp();
+    window.addEventListener('resize', clamp);
+    return () => window.removeEventListener('resize', clamp);
+  }, [libraryOpen]);
+
   const toggleSection = (key: keyof SectionState) => {
     setSections((prev) => ({ ...prev, [key]: !prev[key] }));
   };
@@ -435,6 +466,34 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
         >
           {chevron(sections.mode)} {t('panel.mode')}
         </div>
+        {loadedRouteName && currentWaypointsCount > 0 && (
+          <div
+            className="section-content"
+            style={{
+              display: 'flex', alignItems: 'flex-start', gap: 6,
+              padding: '6px 10px', marginBottom: 6, fontSize: 12,
+              background: 'rgba(108, 140, 255, 0.10)',
+              border: '1px solid rgba(108, 140, 255, 0.30)',
+              borderRadius: 6,
+            }}
+            title={loadedRouteName}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9ac0ff" strokeWidth="2" style={{ flexShrink: 0, marginTop: 2 }}>
+              <circle cx="6" cy="19" r="2" /><circle cx="18" cy="5" r="2" />
+              <path d="M8 19h6a4 4 0 0 0 0-8H10a4 4 0 0 1 0-8h4" />
+            </svg>
+            <span style={{ opacity: 0.7, flexShrink: 0 }}>{t('panel.loaded_route')}</span>
+            {/* Wrap long names across lines instead of truncating with an
+                ellipsis so the full route name is always readable. */}
+            <span style={{
+              fontWeight: 600, flex: 1, minWidth: 0,
+              whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word',
+              lineHeight: 1.3,
+            }}>
+              {loadedRouteName}
+            </span>
+          </div>
+        )}
         {sections.mode && (
           <div
             className="section-content"
@@ -447,7 +506,10 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
               gap: 6,
             }}
           >
-            {Object.values(SimMode).map((mode) => (
+            {/* 多點導航 (MultiStop) is merged into 路線 (Loop): the only real
+                difference users saw was the lap count, which 路線 already
+                exposes (1 圈 = single pass). Hide it from the picker. */}
+            {Object.values(SimMode).filter((mode) => mode !== SimMode.MultiStop).map((mode) => (
               <button
                 key={mode}
                 className={`mode-btn${simMode === mode ? ' active' : ''}`}
@@ -516,6 +578,30 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
                 </span>
               </label>
             )}
+            {onKeepWaypointsChange && (simMode === SimMode.Loop || simMode === SimMode.MultiStop) && (
+              <label
+                className="lw-checkbox"
+                title={t('panel.keep_waypoints_tooltip')}
+                style={{
+                  gridColumn: '1 / -1',
+                  padding: '6px 10px',
+                  background: keepWaypoints ? 'rgba(108, 140, 255, 0.10)' : 'transparent',
+                  border: `1px solid ${keepWaypoints ? 'rgba(108, 140, 255, 0.32)' : 'transparent'}`,
+                  borderRadius: 6,
+                  fontSize: 11,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={keepWaypoints}
+                  onChange={(e) => onKeepWaypointsChange(e.target.checked)}
+                />
+                <span className="lw-checkbox-box"></span>
+                <span className="lw-checkbox-label" style={{ lineHeight: 1.15 }}>
+                  {t('panel.keep_waypoints')}
+                </span>
+              </label>
+            )}
             {onJumpModeChange && (simMode === SimMode.Loop || simMode === SimMode.MultiStop) && (
               <div
                 style={{
@@ -546,25 +632,46 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
                   </span>
                 </label>
                 {jumpMode && (
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, opacity: 0.85 }}>
-                    {t('panel.jump_interval')}
-                    <input
-                      type="number"
-                      step="0.5"
-                      min="0"
-                      value={jumpInterval}
-                      onChange={(e) => {
-                        const v = parseFloat(e.target.value)
-                        if (Number.isFinite(v) && v >= 0 && onJumpIntervalChange) onJumpIntervalChange(v)
-                      }}
-                      style={{
-                        width: 60, padding: '2px 6px', fontSize: 11,
-                        background: '#0f1218', color: '#e6e8ee',
-                        border: '1px solid rgba(255,255,255,0.12)', borderRadius: 4,
-                      }}
-                    />
-                    <span style={{ opacity: 0.7 }}>{t('panel.jump_interval_seconds')}</span>
-                  </span>
+                  <>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, opacity: 0.85 }}>
+                      {t('panel.jump_pre_delay')}
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0"
+                        value={jumpPreDelay}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value)
+                          if (Number.isFinite(v) && v >= 0 && onJumpPreDelayChange) onJumpPreDelayChange(v)
+                        }}
+                        style={{
+                          width: 60, padding: '2px 6px', fontSize: 11,
+                          background: '#0f1218', color: '#e6e8ee',
+                          border: '1px solid rgba(255,255,255,0.12)', borderRadius: 4,
+                        }}
+                      />
+                      <span style={{ opacity: 0.7 }}>{t('panel.jump_delay_seconds')}</span>
+                    </span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, opacity: 0.85 }}>
+                      {t('panel.jump_post_delay')}
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0"
+                        value={jumpPostDelay}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value)
+                          if (Number.isFinite(v) && v >= 0 && onJumpPostDelayChange) onJumpPostDelayChange(v)
+                        }}
+                        style={{
+                          width: 60, padding: '2px 6px', fontSize: 11,
+                          background: '#0f1218', color: '#e6e8ee',
+                          border: '1px solid rgba(255,255,255,0.12)', borderRadius: 4,
+                        }}
+                      />
+                      <span style={{ opacity: 0.7 }}>{t('panel.jump_delay_seconds')}</span>
+                    </span>
+                  </>
                 )}
               </div>
             )}
@@ -738,10 +845,16 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
               </button>
             </div>
             <button
-              className="action-btn primary"
               onClick={() => onGoldDittoStart?.()}
               disabled={goldDittoBusy}
-              style={{ width: '100%', padding: '8px 12px', fontSize: 13, fontWeight: 600 }}
+              style={{
+                width: '100%', padding: '10px 12px', fontSize: 14, fontWeight: 700,
+                borderRadius: 8, border: 'none', cursor: goldDittoBusy ? 'not-allowed' : 'pointer',
+                background: goldDittoBusy ? 'rgba(108,140,255,0.35)' : 'linear-gradient(135deg, #6c8cff 0%, #4f6fe8 100%)',
+                color: '#fff', letterSpacing: '0.03em',
+                boxShadow: goldDittoBusy ? 'none' : '0 4px 16px rgba(108,140,255,0.45)',
+                transition: 'all 0.15s', opacity: goldDittoBusy ? 0.6 : 1,
+              }}
             >
               {t('goldditto.start_button')}
             </button>
@@ -943,7 +1056,9 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
           className="anim-scale-in"
           style={{
             position: 'fixed', left: libraryPos.x, top: libraryPos.y, zIndex: 800,
-            width: 'min(420px, 90vw)', maxHeight: '75vh',
+            // Scale with the window: shrinks toward 280px on a small app
+            // window, caps at 440px on a large one (issue #34).
+            width: 'clamp(280px, 34vw, 440px)', maxHeight: '72vh',
             background: 'rgba(26, 29, 39, 0.96)',
             backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
             border: '1px solid rgba(108, 140, 255, 0.18)', borderRadius: 12,
@@ -965,7 +1080,6 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
                 <circle cx="9" cy="6" r="1" /><circle cx="9" cy="12" r="1" /><circle cx="9" cy="18" r="1" />
                 <circle cx="15" cy="6" r="1" /><circle cx="15" cy="12" r="1" /><circle cx="15" cy="18" r="1" />
               </svg>
-              {t('panel.library_drag_hint')}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid #3a3a42' }}>
               <button
@@ -985,7 +1099,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
                 title={t('panel.close')}
               >X</button>
             </div>
-            <div style={{ padding: 12, overflowY: 'auto', flex: 1 }}>
+            <div style={{ padding: 12, overflowY: 'auto', flex: 1, minWidth: 0 }}>
               {libraryTab === 'bookmarks' ? (
                 <BookmarkList
                   bookmarks={bookmarks}

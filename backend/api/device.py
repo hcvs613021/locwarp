@@ -1261,6 +1261,30 @@ async def wifi_tunnel_start_and_connect(req: WifiTunnelStartRequest):
         raise HTTPException(status_code=500, detail=f"Tunnel started but connection failed: {e}")
 
 
+class WifiKeepaliveRequest(BaseModel):
+    enabled: bool
+
+
+@router.get("/wifi/tunnel/keepalive")
+async def wifi_tunnel_keepalive_get():
+    """Return whether the idle-tunnel keep-alive loop is enabled."""
+    from main import app_state
+    return {"enabled": bool(app_state._wifi_keepalive_enabled)}
+
+
+@router.post("/wifi/tunnel/keepalive")
+async def wifi_tunnel_keepalive_set(req: WifiKeepaliveRequest):
+    """Enable / disable the keep-alive that re-pushes the current location
+    to idle WiFi tunnels so iOS doesn't drop them when the screen is off."""
+    from main import app_state
+    app_state._wifi_keepalive_enabled = bool(req.enabled)
+    try:
+        app_state.save_settings()
+    except Exception:
+        pass  # best-effort persist; never fail the toggle
+    return {"enabled": app_state._wifi_keepalive_enabled}
+
+
 # ── Generic UDID routes (MUST be defined after all specific /wifi/* routes
 #    so that /wifi/* paths do not accidentally match {udid}). ─────────────
 
@@ -1385,6 +1409,34 @@ async def connect_device(udid: str):
 async def disconnect_device(udid: str):
     from main import app_state
     dm = _dm()
+
+    # WiFi devices: a bare dm.disconnect() closes the RSD but leaves the
+    # tunnel runner + its watchdog armed. The watchdog then sees the socket
+    # die, assumes a blip, and RESTARTS the tunnel — so the device the user
+    # just disconnected pops back as "connected", and the restart churn
+    # (engine rebuild + group auto-sync) can knock a sibling device into
+    # device_lost. So for Network devices we must cancel the watchdog and
+    # stop the runner, exactly like the Stop-Tunnel button (issue: right-
+    # click disconnect on one device dropped all of them).
+    conn = dm._connections.get(udid)
+    is_network = conn is not None and getattr(conn, "connection_type", "") == "Network"
+    has_tunnel = udid in _tunnels
+    if is_network or has_tunnel:
+        async with _tunnels_lock:
+            cleaned = await _cleanup_wifi_connection_for(udid, caller="user_disconnect")
+            await _tear_down_tunnel(udid, caller="user_disconnect")
+        if not cleaned:
+            # No Network conn was found to broadcast for (e.g. a pending
+            # tunnel with no DM connection yet) — emit it ourselves so the
+            # frontend chip + WiFi list still flip to disconnected.
+            try:
+                from api.websocket import broadcast
+                await broadcast("device_disconnected", {"udid": udid, "udids": [udid], "reason": "user"})
+            except Exception:
+                pass
+        return {"status": "disconnected", "udid": udid}
+
+    # USB device: plain teardown.
     await dm.disconnect(udid)
     # Drop the per-udid engine (if any) so _engine() won't route to a dead service.
     app_state.simulation_engines.pop(udid, None)
