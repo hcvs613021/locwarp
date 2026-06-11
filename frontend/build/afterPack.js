@@ -10,14 +10,17 @@
 // `xattr -cr` is recursive. We also explicitly clear the bundle dir
 // itself because -r only descends into children, not the start dir.
 
-const { execSync } = require('child_process')
+const { execFileSync } = require('child_process')
 
 exports.default = async function afterPack(context) {
   if (context.electronPlatformName !== 'darwin') return
   const appPath = `${context.appOutDir}/${context.packager.appInfo.productFilename}.app`
   try {
-    execSync(`xattr -cr "${appPath}"`)
-    execSync(`xattr -c "${appPath}"`)
+    // Read-only files (e.g. dylibs inherited from brew, mode 444) make
+    // xattr -c fail with EACCES — grant owner write first.
+    execFileSync('chmod', ['-R', 'u+w', appPath])
+    execFileSync('xattr', ['-cr', appPath])
+    execFileSync('xattr', ['-c', appPath])
     console.log(`[afterPack] stripped xattrs from ${appPath}`)
   } catch (e) {
     console.error(`[afterPack] xattr strip failed:`, e.message)

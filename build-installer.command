@@ -82,6 +82,9 @@ if [ -f "$PYEXPAT" ]; then
     [ -z "$BREW_EXPAT" ] && BREW_EXPAT=/opt/homebrew/opt/expat/lib/libexpat.1.12.0.dylib
     vtool -set-build-version macos 11.0 26.4 -replace \
         -output "$DYNLOAD/libexpat.1.dylib" "$BREW_EXPAT" || exit 1
+    # brew dylibs are read-only (444); vtool's output inherits that.
+    # Later steps (xattr strip in afterPack, codesign) need write access.
+    chmod 644 "$DYNLOAD/libexpat.1.dylib" || exit 1
     codesign --force --sign - "$DYNLOAD/libexpat.1.dylib" || exit 1
     install_name_tool -change /usr/lib/libexpat.1.dylib \
         @loader_path/libexpat.1.dylib "$PYEXPAT" || exit 1
