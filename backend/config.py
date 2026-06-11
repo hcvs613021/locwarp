@@ -115,5 +115,28 @@ RECONNECT_MAX_RETRIES = 30
 DEFAULT_LOCATION = {"lat": 25.0375, "lng": 121.5637}
 
 # Server
-API_HOST = "0.0.0.0"
+# Bind address. Default 127.0.0.1 (loopback only): the desktop Electron UI
+# reaches the backend over localhost, so the API is NOT exposed to the LAN
+# by default. The user can opt in to 0.0.0.0 via Settings → 同網段連線
+# (needed for the phone-control feature, where a phone on the same WiFi
+# must reach the backend). Persisted as `lan_enabled` in settings.json.
+API_HOST_LOCAL = "127.0.0.1"
+API_HOST_LAN = "0.0.0.0"
+API_HOST = API_HOST_LOCAL  # legacy constant; new code should call resolve_api_host()
 API_PORT = 8777
+
+
+def resolve_api_host() -> str:
+    """Return the server bind address based on the persisted lan_enabled flag.
+
+    Read directly from settings.json (not AppState) so it can be called at
+    process start, before the app is wired up. Defaults to loopback-only.
+    """
+    try:
+        from services.json_safe import safe_load_json
+        data = safe_load_json(SETTINGS_FILE)
+        if isinstance(data, dict) and data.get("lan_enabled") is True:
+            return API_HOST_LAN
+    except Exception:
+        pass
+    return API_HOST_LOCAL

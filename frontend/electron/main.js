@@ -378,6 +378,54 @@ ipcMain.handle('launch-daemon-uninstall', async () => {
   return r
 })
 
+// Restart the backend so it re-reads settings.json (used after the LAN /
+// network-mode toggle, which only changes the bind address on the next
+// process start). Picks the right mechanism for how the backend is
+// currently running. Binding 0.0.0.0 itself needs no privilege — only
+// kickstarting the root LaunchDaemon does, hence the osascript prompt in
+// that one branch.
+ipcMain.handle('restart-backend', async () => {
+  // (1) LaunchDaemon owns the backend → kickstart -k re-execs as root.
+  if (process.platform === 'darwin' && fs.existsSync(LAUNCH_DAEMON_PATH)) {
+    const sh = (s) => `'${String(s).replace(/'/g, "'\\''")}'`
+    const shellCmd = `launchctl kickstart -k system/${LAUNCH_DAEMON_LABEL} && echo OK`
+    const ascript = `do shell script "${shellCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" with administrator privileges`
+    const r = await new Promise((resolve) => {
+      const child = spawn('osascript', ['-e', ascript], { windowsHide: true })
+      let out = '', err = ''
+      child.stdout.on('data', (d) => { out += d.toString('utf8') })
+      child.stderr.on('data', (d) => { err += d.toString('utf8') })
+      child.on('error', (e) => resolve({ ok: false, message: e.message }))
+      child.on('exit', (code) => {
+        const t = out.trim()
+        if (code === 0 && t.endsWith('OK')) return resolve({ ok: true })
+        const msg = err.trim() || t || `osascript exited ${code}`
+        if (/-128/.test(msg) || /User canceled/i.test(msg)) {
+          return resolve({ ok: false, code: 'CANCELLED', message: '使用者取消授權' })
+        }
+        resolve({ ok: false, message: msg })
+      })
+    })
+    if (!r.ok) return r
+    try { await waitForBackend(30000) } catch (e) { return { ok: false, message: `重啟後 backend 未啟動: ${e.message || e}` } }
+    return { ok: true, mode: 'daemon' }
+  }
+  // (2) One-shot root backend (osascript-spawned) → respawn via admin flow.
+  if (backendIsRoot) {
+    return await requestAdminRestartMac()
+  }
+  // (3) User-mode child (packaged, non-root) → stop + start fresh.
+  if (app.isPackaged) {
+    stopBackend()
+    await waitForPortClear(8777, 5000).catch(() => {})
+    startBackend()
+    try { await waitForBackend(30000) } catch (e) { return { ok: false, message: `重啟後 backend 未啟動: ${e.message || e}` } }
+    return { ok: true, mode: 'user' }
+  }
+  // (4) Dev mode — the developer runs the backend manually.
+  return { ok: false, code: 'DEV', message: '開發模式請手動重啟 backend' }
+})
+
 ipcMain.handle('locate-pc', async () => {
   // Windows-only: probe System.Device.Location via PowerShell first
   // (uses Wi-Fi positioning + GPS, accurate to 30-100m). On macOS / Linux

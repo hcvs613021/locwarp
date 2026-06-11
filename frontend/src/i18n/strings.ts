@@ -582,6 +582,14 @@ export const STRINGS = {
   'settings.render_mode_sw': { zh: '軟體渲染', en: 'Software rendering' },
   'settings.render_mode_restart_hint': { zh: '已儲存,重啟後生效', en: 'Saved. Takes effect after restart.' },
   'settings.render_mode_restart_now': { zh: '立即重啟', en: 'Restart now' },
+  // Network mode (LAN exposure) — security-relevant toggle.
+  'settings.group_network': { zh: '網路', en: 'Network' },
+  'settings.lan_label': { zh: '同網段連線', en: 'Same-subnet (LAN) access' },
+  'settings.lan_desc': { zh: '預設只允許本機 (127.0.0.1) 連線,較安全。開啟後 backend 會綁定 0.0.0.0,讓同一個 WiFi 的「手機操控」可以連到電腦——但這也代表同網段的任何人都能存取 API。僅在需要手機操控、且在信任的網路下開啟。切換後需重啟 backend 生效。', en: 'By default only this machine (127.0.0.1) can connect — safer. When on, the backend binds 0.0.0.0 so the phone-control feature on the same Wi-Fi can reach it — but anyone on the same subnet can then reach the API too. Only enable when you need phone control on a trusted network. Restart required after change.' },
+  'settings.lan_restart_hint': { zh: '已儲存,重啟 backend 後生效', en: 'Saved. Takes effect after the backend restarts.' },
+  'settings.lan_restart_now': { zh: '立即重啟 backend', en: 'Restart backend now' },
+  'settings.lan_restarting': { zh: '重啟中…', en: 'Restarting…' },
+  'settings.lan_restart_failed': { zh: '重啟失敗', en: 'Restart failed' },
   // Timezone-detail modal opened from the status-bar tz chip.
   'tz.detail_tooltip': { zh: '點開查看完整時區資訊', en: 'Click for full timezone details' },
   'tz.modal_title': { zh: '目的地時區', en: 'Destination Timezone' },

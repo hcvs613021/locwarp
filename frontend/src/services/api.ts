@@ -137,6 +137,15 @@ export const wifiRepair = () => request<{ status: string; udid: string; name: st
 export const wifiKeepaliveGet = () => request<{ enabled: boolean }>('GET', '/api/device/wifi/tunnel/keepalive')
 export const wifiKeepaliveSet = (enabled: boolean) =>
   request<{ enabled: boolean }>('POST', '/api/device/wifi/tunnel/keepalive', { enabled })
+
+// Network mode: whether the backend binds 0.0.0.0 (LAN-reachable, needed
+// for phone control) or 127.0.0.1 (loopback only, the safe default).
+// `active_lan` is what the running process bound to; `restart_required`
+// is true when the saved preference hasn't taken effect yet.
+export interface NetworkMode { lan_enabled: boolean; active_lan: boolean; restart_required: boolean }
+export const getNetworkMode = () => request<NetworkMode>('GET', '/api/system/network-mode')
+export const setNetworkMode = (lan_enabled: boolean) =>
+  request<NetworkMode>('POST', '/api/system/network-mode', { lan_enabled })
 export const amfiRevealDeveloperMode = (udid: string) =>
   request<{ status: string }>('POST', `/api/device/${encodeURIComponent(udid)}/amfi/reveal-developer-mode`)
 

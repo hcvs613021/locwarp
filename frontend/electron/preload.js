@@ -17,5 +17,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   launchDaemonStatus: () => ipcRenderer.invoke('launch-daemon-status'),
   launchDaemonInstall: () => ipcRenderer.invoke('launch-daemon-install'),
   launchDaemonUninstall: () => ipcRenderer.invoke('launch-daemon-uninstall'),
+  // Restart the backend so it re-reads settings.json (e.g. after the LAN
+  // network-mode toggle changes the bind address). Resolves { ok, mode }.
+  restartBackend: () => ipcRenderer.invoke('restart-backend'),
   platform: process.platform,
 })

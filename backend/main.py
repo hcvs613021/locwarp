@@ -9,7 +9,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from config import API_HOST, API_PORT, SETTINGS_FILE, DEFAULT_LOCATION
+from config import API_PORT, SETTINGS_FILE, DEFAULT_LOCATION, resolve_api_host
 from core.device_manager import DeviceManager
 from services.cooldown import CooldownTimer
 from services.bookmarks import BookmarkManager
@@ -71,6 +71,13 @@ class AppState:
         # idle Network tunnels so iOS doesn't drop the RSD socket when the
         # phone screen turns off. Default ON; user can toggle in the panel.
         self._wifi_keepalive_enabled: bool = True
+        # LAN exposure. False (default) → bind 127.0.0.1, loopback only.
+        # True → bind 0.0.0.0 so a phone on the same WiFi can reach the
+        # backend (phone-control feature). Takes effect on next backend
+        # start. `_active_lan` records what THIS running process actually
+        # bound to, so the UI can tell when a restart is pending.
+        self._lan_enabled: bool = False
+        self._active_lan: bool = False
         self._load_settings()
 
     def _load_settings(self):
@@ -101,6 +108,9 @@ class AppState:
             ka = data.get("wifi_keepalive_enabled")
             if isinstance(ka, bool):
                 self._wifi_keepalive_enabled = ka
+            lan = data.get("lan_enabled")
+            if isinstance(lan, bool):
+                self._lan_enabled = lan
         except (ValueError, KeyError):
             logger.warning("Settings payload field malformed; keeping defaults", exc_info=True)
 
@@ -114,6 +124,7 @@ class AppState:
             "geocode_provider": self._geocode_provider,
             "google_geocode_key": self._google_geocode_key,
             "wifi_keepalive_enabled": self._wifi_keepalive_enabled,
+            "lan_enabled": self._lan_enabled,
         }
         safe_write_json(SETTINGS_FILE, data)
 
@@ -661,6 +672,11 @@ async def _wifi_tunnel_keepalive():
 async def lifespan(application: FastAPI):
     import asyncio
     # ── Startup ──
+    # Record what this process actually bound to (read from the same
+    # settings the launcher used), so the network-mode endpoint can tell
+    # the UI whether a toggle is still pending a restart.
+    from config import resolve_api_host, API_HOST_LAN
+    app_state._active_lan = (resolve_api_host() == API_HOST_LAN)
     logger.info("LocWarp starting — scanning for devices…")
     try:
         devices = await app_state.device_manager.discover_devices()
@@ -748,4 +764,7 @@ if __name__ == "__main__":
     uvicorn_access = logging.getLogger("uvicorn.access")
     uvicorn_access.setLevel(logging.INFO)
     uvicorn_access.propagate = True  # route through our basicConfig handlers
-    uvicorn.run("main:app", host=API_HOST, port=API_PORT, reload=False, access_log=True)
+    bind_host = resolve_api_host()
+    logger.info("Binding API server to %s:%d (lan_enabled=%s)",
+                bind_host, API_PORT, bind_host == "0.0.0.0")
+    uvicorn.run("main:app", host=bind_host, port=API_PORT, reload=False, access_log=True)

@@ -6,7 +6,7 @@ import {
   setAlertSoundEnabled,
   playCompletionAlert,
 } from '../services/alertSound';
-import { getInitialPosition, setInitialPosition } from '../services/api';
+import { getInitialPosition, setInitialPosition, getNetworkMode, setNetworkMode } from '../services/api';
 import { useUpdateCheck } from './UpdateChecker';
 import type { RenderMode, RenderModeInfo } from '../types/electron';
 
@@ -57,6 +57,14 @@ const SettingsPage: React.FC<Props> = ({ onOpenLogFolder, onEnableDeveloperMode 
   const [renderDirty, setRenderDirty] = useState(false);
   const update = useUpdateCheck();
 
+  // Network mode (LAN exposure). lanEnabled = saved preference;
+  // lanRestartPending = saved value differs from the running bind, so a
+  // backend restart is needed to apply it.
+  const [lanEnabled, setLanEnabled] = useState<boolean | null>(null);
+  const [lanRestartPending, setLanRestartPending] = useState(false);
+  const [lanBusy, setLanBusy] = useState(false);
+  const [lanError, setLanError] = useState<string | null>(null);
+
   // Startup map view (起始地圖位置) — moved here from the status bar.
   const [initOpen, setInitOpen] = useState(false);
   const [initVal, setInitVal] = useState('');
@@ -102,6 +110,46 @@ const SettingsPage: React.FC<Props> = ({ onOpenLogFolder, onEnableDeveloperMode 
       setRenderDirty(false);
     }).catch(() => { /* non-Electron context */ });
   }, []);
+
+  useEffect(() => {
+    getNetworkMode().then((m) => {
+      setLanEnabled(m.lan_enabled);
+      setLanRestartPending(m.restart_required);
+    }).catch(() => { /* backend not up yet */ });
+  }, []);
+
+  const handleLan = async (next: boolean) => {
+    setLanBusy(true);
+    setLanError(null);
+    try {
+      const m = await setNetworkMode(next);
+      setLanEnabled(m.lan_enabled);
+      setLanRestartPending(m.restart_required);
+    } catch (e: any) {
+      setLanError(e?.message || 'error');
+    } finally {
+      setLanBusy(false);
+    }
+  };
+
+  const handleLanRestart = async () => {
+    const api = window.electronAPI;
+    if (!api?.restartBackend) { setLanError(t('settings.lan_restart_failed')); return; }
+    setLanBusy(true);
+    setLanError(null);
+    try {
+      const r = await api.restartBackend();
+      if (r.ok) {
+        setLanRestartPending(false);
+      } else if (r.code !== 'CANCELLED') {
+        setLanError(`${t('settings.lan_restart_failed')}${r.message ? ': ' + r.message : ''}`);
+      }
+    } catch (e: any) {
+      setLanError(`${t('settings.lan_restart_failed')}: ${e?.message || e}`);
+    } finally {
+      setLanBusy(false);
+    }
+  };
 
   const handleAlert = (next: boolean) => {
     setAlertEnabled(next);
@@ -193,6 +241,40 @@ const SettingsPage: React.FC<Props> = ({ onOpenLogFolder, onEnableDeveloperMode 
           </span>
         </button>
       </div>
+
+      {/* 網路 — LAN exposure toggle (security-relevant). Only shown once
+          the backend has answered the network-mode query. */}
+      {lanEnabled !== null && (
+        <>
+          <div className="ios-group-label">{t('settings.group_network')}</div>
+          <div className="ios-card">
+            <div className="ios-row">
+              <span className="ios-row-label">
+                {t('settings.lan_label')} <Help title={t('settings.lan_desc')} />
+              </span>
+              <IosSwitch checked={lanEnabled} onChange={(v) => { if (!lanBusy) handleLan(v); }} />
+            </div>
+            {lanRestartPending && (
+              <div className="ios-row" style={{ alignItems: 'center' }}>
+                <span className="ios-row-sub">{t('settings.lan_restart_hint')}</span>
+                <button
+                  type="button"
+                  className="ios-pill"
+                  disabled={lanBusy}
+                  onClick={handleLanRestart}
+                >
+                  {lanBusy ? t('settings.lan_restarting') : t('settings.lan_restart_now')}
+                </button>
+              </div>
+            )}
+            {lanError && (
+              <div className="ios-row">
+                <span className="ios-row-sub" style={{ color: '#ff4757' }}>{lanError}</span>
+              </div>
+            )}
+          </div>
+        </>
+      )}
 
       {initOpen && createPortal((
         <div

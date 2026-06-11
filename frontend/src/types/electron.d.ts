@@ -34,6 +34,13 @@ export interface LaunchDaemonResult {
   message?: string
 }
 
+export interface RestartBackendResult {
+  ok: boolean
+  mode?: 'daemon' | 'user'
+  code?: 'CANCELLED' | 'DEV'
+  message?: string
+}
+
 declare global {
   interface Window {
     electronAPI?: {
@@ -46,6 +53,7 @@ declare global {
       launchDaemonStatus(): Promise<LaunchDaemonStatus>
       launchDaemonInstall(): Promise<LaunchDaemonResult>
       launchDaemonUninstall(): Promise<LaunchDaemonResult>
+      restartBackend(): Promise<RestartBackendResult>
       platform: NodeJS.Platform
     }
   }
